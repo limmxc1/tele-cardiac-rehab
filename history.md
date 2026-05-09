@@ -406,3 +406,20 @@ Clinicians can now create patient accounts directly from the Patients page witho
 - "+ New Patient" button added to the patients list header.
 
 **Key files:** `app/actions/patients.ts` (new), `app/(clinician)/clinician/patients/new/page.tsx` (new), `app/(clinician)/clinician/patients/page.tsx`
+
+---
+
+## Patch — Edit patient profile and scheduled prescriptions
+
+### Edit patient
+- `updatePatientAction` in `app/actions/patients.ts` — patches `display_name` and `username` with uniqueness check that excludes the patient being edited.
+- `/clinician/patients/[id]/edit` page: client form pre-populated via query params (name + username passed from the patient detail header). Cancel returns to the patient page.
+- "Edit Patient" button added to patient detail page header.
+
+### Edit prescription
+- `updatePrescriptionAction` in `app/actions/prescriptions.ts` — updates `scheduled_date` and `hr_upper_limit_bpm`, then deletes and re-inserts all `prescription_items`. Blocked if any sessions reference the prescription (same guard as delete).
+- New route `/clinician/patients/[id]/prescriptions/[prescriptionId]/edit` — server page fetches full prescription + items (with exercise details) + exercise library, detects session history, passes all to client.
+- `EditPrescriptionClient.tsx` — single-date form with full exercise item management: add/remove/reorder, sets/reps/rest, per-item angle overrides. Shows an amber warning banner and disables item editing when sessions already exist (date/HR still editable).
+- "Edit" link added per row in `PrescriptionHistoryTable.tsx`.
+
+**Key files:** `app/actions/patients.ts`, `app/actions/prescriptions.ts`, `app/(clinician)/clinician/patients/[id]/edit/page.tsx` (new), `app/(clinician)/clinician/patients/[id]/prescriptions/[prescriptionId]/edit/page.tsx` (new), `app/(clinician)/clinician/patients/[id]/prescriptions/[prescriptionId]/edit/EditPrescriptionClient.tsx` (new), `app/(clinician)/clinician/patients/[id]/PrescriptionHistoryTable.tsx`, `app/(clinician)/clinician/patients/[id]/page.tsx`
