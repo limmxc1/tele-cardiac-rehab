@@ -86,8 +86,13 @@ class SessionBufferDB extends Dexie {
       reps: '++id, sessionId, sessionSetId',
       pauses: 'pauseId, sessionId',
     })
-    // v2: rep PK becomes the client-minted UUID so retries upsert deterministically.
-    this.version(2).stores({
+    // v2: drop the old reps store. Dexie can't change a primary key in place,
+    // so we delete the store…
+    this.version(2).stores({ reps: null })
+    // …and v3 re-creates it with the client-minted UUID as PK so retries
+    // upsert deterministically. Any unflushed reps from v1 are lost; sessions
+    // / sets / hr / pose data carry over.
+    this.version(3).stores({
       reps: 'repId, sessionId, sessionSetId',
     })
   }
