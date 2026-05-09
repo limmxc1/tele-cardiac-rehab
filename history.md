@@ -370,3 +370,39 @@ Counterpart to "+ Prescribe Routine": clinicians can now drop a scheduled day of
 - If the prescription has session history, the action returns a friendly error explaining the user should delete the session first; the button surfaces that text inline.
 
 **Key files:** `app/actions/prescriptions.ts`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/DeletePrescriptionButton.tsx` (new)
+
+---
+
+## Patch — Bulk delete scheduled prescriptions
+
+Clinicians can now select multiple prescriptions from the Prescription History table on the patient detail page and delete them in one action.
+
+- `bulkDeletePrescriptionsAction` in `app/actions/prescriptions.ts` checks for session history across all selected IDs in one query before deleting; returns a clear error if any are protected.
+- New `PrescriptionHistoryTable.tsx` client component replaces the inline server-rendered table. Owns selection state (checkboxes + select-all), shows a confirmation bar when items are selected, and retains the per-row delete button.
+
+**Key files:** `app/actions/prescriptions.ts`, `app/(clinician)/clinician/patients/[id]/PrescriptionHistoryTable.tsx` (new), `app/(clinician)/clinician/patients/[id]/page.tsx`
+
+---
+
+## Patch — Edit exercise and redo demo
+
+Clinicians can click any exercise name in the library to open a pre-populated edit form. All parameters (angles, joints, orientation, GIF, secondary joint) are editable. The Demo section lets them redo the pose capture to auto-refresh angle thresholds.
+
+- `updateExerciseAction(id, payload)` in `app/actions/exercises.ts` patches all exercise fields and redirects back to the library.
+- `NewExerciseClient.tsx` extended with optional `exerciseId` / `initial` props; handles both create and edit modes without code duplication.
+- New route `app/(clinician)/clinician/exercises/[id]/edit/page.tsx` (server page) fetches the full exercise row and renders the shared form.
+- Exercise names in the library list are now links to the edit page.
+
+**Key files:** `app/actions/exercises.ts`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `app/(clinician)/clinician/exercises/[id]/edit/page.tsx` (new), `app/(clinician)/clinician/exercises/page.tsx`
+
+---
+
+## Patch — New patient creation from patients page
+
+Clinicians can now create patient accounts directly from the Patients page without manual DB inserts.
+
+- `createPatientAction` in `app/actions/patients.ts` validates username uniqueness and inserts a new `users` row with `role: 'patient'`.
+- `/clinician/patients/new` form with display name + username fields; username is auto-suggested (snake_cased) from the display name as the clinician types.
+- "+ New Patient" button added to the patients list header.
+
+**Key files:** `app/actions/patients.ts` (new), `app/(clinician)/clinician/patients/new/page.tsx` (new), `app/(clinician)/clinician/patients/page.tsx`
