@@ -464,3 +464,18 @@ Patients now see real-time angle feedback during a working set so they can self-
 - The bar's range is `min(startMin,endMin)` to `max(startMax,endMax)` plus a 15% pad clamped to `[0,180]` — overshoots stay visible.
 
 **Key files:** `lib/pose/sessionStateMachine.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`
+
+---
+
+## Patch — Drop orientation gate and O-pose start, restore countdown
+
+Patient feedback: the pre-set gauntlet (in-frame → orientation hold → O-pose hold) was too finicky for elderly users. Reverted the start path to a 3-second auto-countdown.
+
+- **`SessionStateMachine`**: removed `OPoseDetector` and `OrientationGate` imports/fields. `enterReady()` now resets state, fires `startReadyCue`, and starts a 1-Hz countdown interval (3 → 0). When the countdown reaches 0, `tryStartActive()` runs; it transitions READY → ACTIVE only if `fullyInFrame` and `personCount === 1`. If those aren't satisfied yet, the next `feedPose` re-tries — so a patient who isn't framed up at t=0 starts as soon as they step in. `clearCountdownTimer()` is invoked from `enterPaused`, `endSession`, and `destroy` for symmetry with the rest timer.
+- **`SessionSnapshot`**: dropped `oPoseProgress`, `orientationProgress`, `orientationOk`. `countdownSecondsLeft` is now live (was a back-compat zero placeholder).
+- **`startReadyCue`** in `lib/audio/cues.ts`: speaks "three, two, one, begin" again (replaces the O-pose instruction TTS).
+- **`SessionRunClient.tsx`**: READY overlay shows the big countdown number while `countdownSecondsLeft > 0`, the existing "Step fully into the frame" coaching once the countdown hits 0 if the body isn't visible yet, then "Begin" briefly before transitioning. Removed `OPoseRing` and `OrientationBar` sub-components. IDLE start-screen hint updated: "After tapping Start, a 3-second countdown will begin · T-pose to end the workout early".
+- **T-pose to end workout**: still wired — `onTPoseDetected` during ACTIVE calls `endSession('t_pose')` which closes the active set, fires `onSetEnd`/`onSessionEnd`, and skips remaining sets. Verified intact.
+- `SetEntry.viewOrientation` is preserved (DB still has the column; clinician demo still validates orientation during exercise creation), it just no longer gates the patient runtime.
+
+**Key files:** `lib/pose/sessionStateMachine.ts`, `lib/audio/cues.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`

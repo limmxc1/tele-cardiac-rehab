@@ -17,7 +17,7 @@ function speak(text: string): void {
 }
 
 export function startReadyCue(): void {
-  speak('Make a circle above your head with both hands to start')
+  speak('three, two, one, begin')
 }
 
 export function repCue(): void {

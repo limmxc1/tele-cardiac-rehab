@@ -1,10 +1,10 @@
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { RepDetector, type RepConfig, type RepEvent } from './repDetector'
 import { TPoseDetector } from './tposeDetector'
-import { OPoseDetector } from './oposeDetector'
-import { OrientationGate, type ViewOrientation } from './orientationDetector'
 import { JOINT_TRIPLETS } from './landmarks'
 import { getJointAngle } from './angles'
+
+type ViewOrientation = 'front' | 'side'
 import {
   startReadyCue, repCue, restCue, nextExerciseCue,
   pauseCue, resumeReadyCue, sessionCompleteCue,
@@ -92,8 +92,7 @@ export interface SetEntry {
   isLastSetOfItem: boolean
   isLastSet: boolean
   nextExerciseName: string | null
-  /** Required camera view for this exercise. Patient must hold the orientation
-   *  before the start gesture is accepted. */
+  /** Persisted on the exercise but no longer gated at runtime. */
   viewOrientation: ViewOrientation
 }
 
@@ -122,17 +121,11 @@ export interface SessionSnapshot {
   tposeProgress: number
   restSecondsLeft: number
   hrBpm: number | null
-  /** Legacy — always 0 now that the start gesture replaces the countdown. Kept so older callers don't break. */
+  /** Seconds left on the pre-set countdown during READY (3 → 0). 0 outside READY. */
   countdownSecondsLeft: number
   completedReps: RepEvent[]
-  /** True while in READY iff the latest pose has all 33 landmarks visible. UI uses this to coach the user. */
+  /** True while in READY iff the latest pose has the body landmarks visible. UI uses this to coach the user. */
   fullyInFrame: boolean
-  /** 0..1 — O-pose hold progress during READY (start-of-set gesture). */
-  oPoseProgress: number
-  /** 0..1 — patient is holding the requested view orientation. Must reach 1 before the O-pose gate opens. */
-  orientationProgress: number
-  /** True once orientationProgress has reached 1 — UI uses this to swap from coaching to start gesture. */
-  orientationOk: boolean
   /** Live primary-joint angle in degrees, or null when joint not visible. Surfaced for the in-session HUD. */
   primaryAngleDegrees: number | null
   /** Live secondary-joint angle in degrees (or null if no secondary configured / not visible). */
@@ -151,8 +144,6 @@ export class SessionStateMachine {
 
   private repDetector: RepDetector | null = null
   private tposeDetector: TPoseDetector
-  private oposeDetector: OPoseDetector
-  private orientationGate: OrientationGate
 
   private latestHr: number | null = null
   private hrBreachStart: number | null = null
@@ -167,15 +158,14 @@ export class SessionStateMachine {
 
   // READY view state — surfaced in snapshots so the UI can coach the patient.
   private fullyInFrame = false
-  private oPoseProgress = 0
-  private orientationProgress = 0
-  private orientationOk = false
+  private countdownSecondsLeft = 0
 
   // Live joint-angle readout for the patient HUD.
   private primaryAngleDegrees: number | null = null
   private secondaryAngleDegrees: number | null = null
 
   private restInterval: ReturnType<typeof setInterval> | null = null
+  private countdownInterval: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private readonly sets: SetEntry[],
@@ -186,8 +176,6 @@ export class SessionStateMachine {
   ) {
     this.setIdx = startSetIdx
     this.tposeDetector = new TPoseDetector(() => this.onTPoseDetected())
-    this.oposeDetector = new OPoseDetector(() => this.onOPoseDetected())
-    this.orientationGate = new OrientationGate(this.sets[startSetIdx].viewOrientation)
   }
 
   private get cur(): SetEntry { return this.sets[this.setIdx] }
@@ -231,25 +219,18 @@ export class SessionStateMachine {
       // Auto-resume once the relevant joint is reliably visible again.
       if (jointVisible && this.personCount === 1) this.resumeFromPause()
     } else if (this.phase === 'READY') {
-      // Two-stage gate: orientation first, then start gesture.
-      if (fully && this.personCount === 1) {
-        this.orientationProgress = this.orientationGate.feed(landmarks, timestamp_ms)
-        this.orientationOk = this.orientationProgress >= 1
-        if (this.orientationOk) {
-          this.oPoseProgress = this.oposeDetector.feed(landmarks, timestamp_ms)
-        } else {
-          this.oposeDetector.reset()
-          this.oPoseProgress = 0
-        }
-      } else {
-        this.orientationGate.reset()
-        this.orientationProgress = 0
-        this.orientationOk = false
-        this.oposeDetector.reset()
-        this.oPoseProgress = 0
-      }
+      // Once the countdown has finished and the patient is fully in frame
+      // (single person), start the set.
+      this.tryStartActive()
     }
     this.emit()
+  }
+
+  private tryStartActive(): void {
+    if (this.phase !== 'READY') return
+    if (this.countdownSecondsLeft > 0) return
+    if (!this.fullyInFrame || this.personCount !== 1) return
+    this.enterActive()
   }
 
   feedHR(hr_bpm: number, timestamp_ms: number): void {
@@ -335,6 +316,7 @@ export class SessionStateMachine {
   destroy(): void {
     this.destroyed = true
     this.clearRestTimer()
+    this.clearCountdownTimer()
   }
 
   private enterReady(): void {
@@ -343,21 +325,30 @@ export class SessionStateMachine {
     this.completedReps = []
     this.tposeProgress = 0
     this.tposeDetector.reset()
-    this.oposeDetector.reset()
-    this.oPoseProgress = 0
     this.partialBodyStart = null
-    // Rebuild the orientation gate for the upcoming set (orientation can vary
-    // exercise-to-exercise, e.g. squats front + arm raise side).
-    this.orientationGate = new OrientationGate(this.cur.viewOrientation)
-    this.orientationProgress = 0
-    this.orientationOk = false
+    this.countdownSecondsLeft = 3
     startReadyCue()
+    this.startCountdownTimer()
   }
 
-  private onOPoseDetected(): void {
-    if (this.phase !== 'READY') return
-    this.enterActive()
-    this.emit()
+  private startCountdownTimer(): void {
+    this.clearCountdownTimer()
+    this.countdownInterval = setInterval(() => {
+      if (this.destroyed) { this.clearCountdownTimer(); return }
+      this.countdownSecondsLeft = Math.max(0, this.countdownSecondsLeft - 1)
+      if (this.countdownSecondsLeft === 0) {
+        this.clearCountdownTimer()
+        this.tryStartActive()
+      }
+      this.emit()
+    }, 1000)
+  }
+
+  private clearCountdownTimer(): void {
+    if (this.countdownInterval !== null) {
+      clearInterval(this.countdownInterval)
+      this.countdownInterval = null
+    }
   }
 
   private enterActive(): void {
@@ -367,8 +358,8 @@ export class SessionStateMachine {
     this.outOfFrameStart = null
     this.multiPersonStart = null
     this.partialBodyStart = null
-    this.oPoseProgress = 0
-    this.oposeDetector.reset()
+    this.clearCountdownTimer()
+    this.countdownSecondsLeft = 0
     this.repDetector = new RepDetector(this.cur.repConfig, (ev) => this.onRepComplete(ev))
     this.tposeDetector.reset()
     // Only fire onSetStart when transitioning from READY (not from PAUSED → ACTIVE).
@@ -425,6 +416,7 @@ export class SessionStateMachine {
     }
     this.repDetector = null
     this.clearRestTimer()
+    this.clearCountdownTimer()
     this.phase = 'SET_COMPLETE'
     setTimeout(() => {
       if (this.destroyed) return
@@ -502,6 +494,7 @@ export class SessionStateMachine {
     this.pauseReason = reason
     this.repDetector = null
     this.clearRestTimer()
+    this.clearCountdownTimer()
     pauseCue(reason)
     if (reason === 'hr_breach') resumeReadyCue()
     this.events.onPauseStart?.({ reason, ts_ms: performance.now() })
@@ -529,12 +522,9 @@ export class SessionStateMachine {
       tposeProgress: this.tposeProgress,
       restSecondsLeft: this.restSecondsLeft,
       hrBpm: this.latestHr,
-      countdownSecondsLeft: 0,
+      countdownSecondsLeft: this.countdownSecondsLeft,
       completedReps: this.completedReps,
       fullyInFrame: this.fullyInFrame,
-      oPoseProgress: this.oPoseProgress,
-      orientationProgress: this.orientationProgress,
-      orientationOk: this.orientationOk,
       primaryAngleDegrees: this.primaryAngleDegrees,
       secondaryAngleDegrees: this.secondaryAngleDegrees,
     })
