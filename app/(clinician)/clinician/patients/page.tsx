@@ -10,11 +10,19 @@ export default async function PatientsPage() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="flex items-center gap-4 border-b border-slate-200 bg-white px-6 py-4">
-        <Link href="/clinician" className="text-sm text-slate-400 hover:text-slate-600">
-          ← Dashboard
+      <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
+        <div className="flex items-center gap-4">
+          <Link href="/clinician" className="text-sm text-slate-400 hover:text-slate-600">
+            ← Dashboard
+          </Link>
+          <h1 className="text-lg font-semibold text-slate-800">Patients</h1>
+        </div>
+        <Link
+          href="/clinician/patients/new"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+        >
+          + New Patient
         </Link>
-        <h1 className="text-lg font-semibold text-slate-800">Patients</h1>
       </header>
 
       <main className="p-6">
