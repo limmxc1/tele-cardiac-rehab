@@ -336,3 +336,25 @@ Replaces the old `HRTimeline` + `JointAngleReadout` panels with `MetricsTimeline
 Primary chart adds light blue/red `ReferenceArea` bands for start/end zones of the active set so clinicians can see how angle traces relate to the prescribed thresholds. The old `JointAngleReadout` and `HRTimeline` components are no longer wired into the page (kept on disk for now in case we want to bring them back; can be deleted later).
 
 **Key files:** `lib/pose/sessionStateMachine.ts`, `lib/pose/orientationDetector.ts` (new), `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `app/(patient)/patient/session/[prescriptionId]/run/page.tsx`, `app/actions/exercises.ts`, `app/(clinician)/clinician/exercises/page.tsx`, `app/(clinician)/clinician/exercises/DeleteExerciseButton.tsx` (new), `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `app/(clinician)/clinician/prescribe/[patientId]/page.tsx`, `db/migrations/0007_exercise_archive_view.sql` (new), `lib/supabase/types.ts`, `components/playback/MetricsTimeline.tsx` (new), `components/playback/PlaybackClient.tsx`
+
+---
+
+## Patch — Exercise delete cascades to prescriptions, per-session delete
+
+Two clinician-facing cleanup affordances:
+
+### 1. Exercise delete now removes the exercise from every patient
+`archiveExerciseAction` previously only flipped `archived_at`, so existing prescriptions kept showing the deleted exercise on the patient calendar. New behavior:
+1. Look up `session_sets.prescription_item_id` rows pointing at the exercise — these item ids are "protected" (we can't delete them without breaking session FKs that drive playback).
+2. Hard-delete every other `prescription_items` row referencing the exercise.
+3. For each prescription that lost an item, if it has zero remaining items AND no `sessions` row points at it, delete the prescription too (avoids leaving empty placeholders on the patient calendar).
+4. Then set `archived_at` on the exercise itself.
+
+Result: deleting an exercise immediately scrubs it from every patient's upcoming calendar, while historic playback (sessions that already ran) remains fully resolvable. Revalidates `/clinician/exercises` and `/clinician/patients`.
+
+### 2. Per-session delete from patient detail
+- New `deleteSessionAction({ sessionId, patientId })` in `app/actions/sessionNotes.ts`. Deletes the `sessions` row; ON DELETE CASCADE on `session_sets`/`session_reps`/`session_pauses`/`session_hr_samples`/`session_pose_frames` purges all derived time-series rows. Scoped by `patient_id` as a guard.
+- New client component `app/(clinician)/clinician/patients/[id]/DeleteSessionButton.tsx` — same two-step confirm pattern as the exercise delete button.
+- Patient detail session-history table now renders the button next to the existing "Review →" link.
+
+**Key files:** `app/actions/exercises.ts`, `app/actions/sessionNotes.ts`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/DeleteSessionButton.tsx` (new)

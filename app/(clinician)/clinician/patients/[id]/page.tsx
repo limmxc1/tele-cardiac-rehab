@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase/server'
+import DeleteSessionButton from './DeleteSessionButton'
 
 type SessionRow = {
   id: string
@@ -218,12 +219,15 @@ export default async function PatientDetailPage({
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Link
-                          href={`/clinician/patients/${id}/sessions/${s.id}/playback`}
-                          className="text-sm font-medium text-blue-600 hover:text-blue-800"
-                        >
-                          Review →
-                        </Link>
+                        <div className="flex items-center justify-end gap-1">
+                          <Link
+                            href={`/clinician/patients/${id}/sessions/${s.id}/playback`}
+                            className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                          >
+                            Review →
+                          </Link>
+                          <DeleteSessionButton sessionId={s.id} patientId={id} />
+                        </div>
                       </td>
                     </tr>
                   ))}
