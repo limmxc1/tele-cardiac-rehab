@@ -358,3 +358,15 @@ Result: deleting an exercise immediately scrubs it from every patient's upcoming
 - Patient detail session-history table now renders the button next to the existing "Review →" link.
 
 **Key files:** `app/actions/exercises.ts`, `app/actions/sessionNotes.ts`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/DeleteSessionButton.tsx` (new)
+
+---
+
+## Patch — Delete scheduled prescriptions
+
+Counterpart to "+ Prescribe Routine": clinicians can now drop a scheduled day off a patient's calendar without a re-prescribe round-trip.
+
+- New `deletePrescriptionAction({ prescriptionId, patientId })` in `app/actions/prescriptions.ts`. Refuses to delete if any `sessions` row references the prescription (an FK without ON DELETE CASCADE — and we want session history preserved as its own decision). On success, ON DELETE CASCADE on `prescription_items.prescription_id` purges the items automatically.
+- New `DeletePrescriptionButton.tsx` (same two-step confirm pattern as the exercise/session delete buttons). Wired into a new right-aligned column on the patient detail "Prescription History" table.
+- If the prescription has session history, the action returns a friendly error explaining the user should delete the session first; the button surfaces that text inline.
+
+**Key files:** `app/actions/prescriptions.ts`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/DeletePrescriptionButton.tsx` (new)

@@ -1,6 +1,7 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 import { supabaseServer } from '@/lib/supabase/server'
 
 export type MonthPrescription = {
@@ -143,4 +144,37 @@ export async function createPrescriptionAction(
   }
 
   redirect(`/clinician/patients/${data.patient_id}`)
+}
+
+/**
+ * Delete a scheduled prescription (a day's routine) for a patient. Allowed
+ * only when no `sessions` row references this prescription — otherwise the
+ * sessions FK would break and the historical record would be orphaned.
+ * `prescription_items` get cleaned up via ON DELETE CASCADE.
+ */
+export async function deletePrescriptionAction(args: {
+  prescriptionId: string
+  patientId: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { count: sessionCount, error: sessErr } = await supabaseServer
+    .from('sessions')
+    .select('*', { count: 'exact', head: true })
+    .eq('prescription_id', args.prescriptionId)
+  if (sessErr) return { ok: false, error: sessErr.message }
+  if ((sessionCount ?? 0) > 0) {
+    return {
+      ok: false,
+      error: 'Cannot delete: this routine already has session history. Delete the session first.',
+    }
+  }
+
+  const { error } = await supabaseServer
+    .from('prescriptions')
+    .delete()
+    .eq('id', args.prescriptionId)
+    .eq('patient_id', args.patientId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath(`/clinician/patients/${args.patientId}`)
+  return { ok: true }
 }

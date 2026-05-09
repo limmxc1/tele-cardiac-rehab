@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase/server'
 import DeleteSessionButton from './DeleteSessionButton'
+import DeletePrescriptionButton from './DeletePrescriptionButton'
 
 type SessionRow = {
   id: string
@@ -144,6 +145,7 @@ export default async function PatientDetailPage({
                     <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-600">HR Limit</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-600"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -164,6 +166,9 @@ export default async function PatientDetailPage({
                         >
                           {p.status.replace('_', ' ')}
                         </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <DeletePrescriptionButton prescriptionId={p.id} patientId={id} />
                       </td>
                     </tr>
                   ))}
