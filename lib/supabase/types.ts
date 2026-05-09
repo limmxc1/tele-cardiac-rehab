@@ -94,6 +94,104 @@ export type Database = {
           },
         ]
       }
+      hr_patients: {
+        Row: {
+          created_at: string
+          device_name: string
+          fall_risk: string
+          hr_lower: number
+          hr_upper: number
+          id: string
+          name: string
+          notes: string | null
+          precautions: Json
+        }
+        Insert: {
+          created_at?: string
+          device_name: string
+          fall_risk?: string
+          hr_lower: number
+          hr_upper: number
+          id?: string
+          name: string
+          notes?: string | null
+          precautions?: Json
+        }
+        Update: {
+          created_at?: string
+          device_name?: string
+          fall_risk?: string
+          hr_lower?: number
+          hr_upper?: number
+          id?: string
+          name?: string
+          notes?: string | null
+          precautions?: Json
+        }
+        Relationships: []
+      }
+      hr_workouts: {
+        Row: {
+          current_hr: number | null
+          current_hr_at: string | null
+          ended_at: string | null
+          hr_count: number
+          hr_lower: number
+          hr_max: number | null
+          hr_min: number | null
+          hr_sum: number
+          hr_upper: number
+          id: string
+          machine: string
+          patient_id: string
+          samples: Json
+          started_at: string
+          status: string
+        }
+        Insert: {
+          current_hr?: number | null
+          current_hr_at?: string | null
+          ended_at?: string | null
+          hr_count?: number
+          hr_lower: number
+          hr_max?: number | null
+          hr_min?: number | null
+          hr_sum?: number
+          hr_upper: number
+          id?: string
+          machine: string
+          patient_id: string
+          samples?: Json
+          started_at?: string
+          status?: string
+        }
+        Update: {
+          current_hr?: number | null
+          current_hr_at?: string | null
+          ended_at?: string | null
+          hr_count?: number
+          hr_lower?: number
+          hr_max?: number | null
+          hr_min?: number | null
+          hr_sum?: number
+          hr_upper?: number
+          id?: string
+          machine?: string
+          patient_id?: string
+          samples?: Json
+          started_at?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "hr_workouts_patient_id_fkey"
+            columns: ["patient_id"]
+            isOneToOne: false
+            referencedRelation: "hr_patients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       prescription_items: {
         Row: {
           exercise_id: string
@@ -456,7 +554,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      hr_append_samples: {
+        Args: { delta: Json; workout_id: string }
+        Returns: undefined
+      }
     }
     Enums: {
       [_ in never]: never

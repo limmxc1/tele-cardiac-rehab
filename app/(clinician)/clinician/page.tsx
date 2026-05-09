@@ -17,7 +17,7 @@ export default function ClinicianDashboardPage() {
       <main className="p-6 space-y-6">
         <ClinicianDashboardClient />
 
-        <nav className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <nav className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Link
             href="/clinician/exercises"
             className="rounded-xl border border-slate-200 bg-white p-5 hover:border-blue-300 hover:shadow-sm"
@@ -31,6 +31,13 @@ export default function ClinicianDashboardPage() {
           >
             <p className="font-semibold text-slate-800">Patients</p>
             <p className="mt-1 text-sm text-slate-400">View patients and prescribe routines</p>
+          </Link>
+          <Link
+            href="/clinician/hr"
+            className="rounded-xl border border-slate-200 bg-white p-5 hover:border-blue-300 hover:shadow-sm"
+          >
+            <p className="font-semibold text-slate-800">HR Monitoring</p>
+            <p className="mt-1 text-sm text-slate-400">Live Polar H10 dashboard, patient profiles, workout history</p>
           </Link>
         </nav>
       </main>

@@ -569,3 +569,51 @@ User feedback on the sparse-pose model: clinicians want to *see* the whole body 
 - Net effect: the whole stickman replays for context, while the graphs stay focused on the configured joints.
 
 **Key files:** `lib/buffer/sessionBuffer.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `components/playback/StickmanCanvas.tsx`, `components/playback/PlaybackClient.tsx`
+
+---
+
+## Phase 11 — Live BLE HR-monitoring dashboard (independent of exercise flow)
+
+A standalone Polar H10 live-monitoring feature, ported from the cardiac-vsm-app reference. Patients pair a strap on a phone, pick a machine, and stream HR in real time; clinicians watch up to 8 patients at once on a colour-coded grid driven by Supabase Realtime. This sits alongside the exercise-prescription flow, not as a replacement — none of the existing patient/session/calendar/playback code was touched.
+
+### 1. Schema (`db/migrations/0009_hr_monitoring.sql`)
+- `hr_patients`: name, **device_name** (unique — Polar H10 advertises e.g. `Polar H10 8B3A2C1F` and that string is the patient identifier; no login), hr_lower/upper (with check constraint `hr_lower < hr_upper`), fall_risk, precautions jsonb, notes.
+- `hr_workouts`: patient_id FK (cascade delete), machine, status (active/ended/aborted), started_at, ended_at, hr_lower/upper snapshot, current_hr/_at scalars, hr_min/max/sum/count, samples jsonb (`[[t_offset_sec, hr], ...]`).
+- `hr_append_samples(workout_id, delta jsonb) returns void` RPC: atomic `samples = samples || delta` so concurrent flushes can't lose rows.
+- `alter publication supabase_realtime add table hr_workouts` so the dashboard can subscribe via `postgres_changes`.
+
+### 2. Helpers
+- **`lib/hr/hrSupabase.ts`** — `classifyZone`, `fmtClock`, `deviceIdFromBLE`, IDB pending-samples buffer (`idbPutPending`/`idbGetPending`/`idbClearPending`, store `hr_monitor`/`pending_samples`), `drawSpark` canvas helper, plus the machine/precaution/fall-risk constants and dashboard limits (8 patients, 2-hour auto-stop).
+- **`lib/hr/hrMonitor.ts`** — purpose-built BLE wrapper distinct from `lib/hr/polarH10.ts`: contact-bit validation (suppresses readings when skin contact is lost), 5-second watchdog (nulls out live HR when notifications stop flowing while the strap stays GATT-connected), and silent reconnect via `getDevices()` + `watchAdvertisements()` so refreshing the patient page doesn't force a chooser prompt. Polar H10 strap broadcasts via standard `0x180D` HR Service / `0x2A37` measurement characteristic; both files use the same protocol but for different runtime semantics.
+
+### 3. Clinician routes (`/clinician/hr`)
+- **`/clinician/hr`** — landing with 4 cards: Live Dashboard / Patient Profiles / History / Patient page link.
+- **`/clinician/hr/patients`** — full CRUD on `hr_patients` (form on the left, search+list on the right). All writes via supabase-js client (no server actions).
+- **`/clinician/hr/dashboard`** — the centerpiece. Start/Stop session button, fresh-session semantics (only shows workouts started ≥ session-start so re-opening doesn't surface stale rows), 8-card grid with zone-coded backgrounds (green = in zone, blue = below, red blinking = above, amber = stale signal, slate = ended), 90-sample sparkline per card, fall-risk + precaution chips, and toast alerts on `signal-lost` / `above-target` zone transitions. Subscribes to `hr_workouts` via Realtime channel; falls back to a `recompute()` snapshot pattern (refs → useState) at 1 Hz to satisfy React 19's "no ref reads during render" lint rule.
+- **`/clinician/hr/history`** — last-7-day patient-aggregated list (workout count + last activity).
+- **`/clinician/hr/history/[patientId]`** — chronological list of that patient's workouts with status badges.
+- **`/clinician/hr/workout/[workoutId]`** — full HR trace canvas chart with target-zone shading, dashed zone lines, m:ss x-axis ticks, and stat tiles (duration / avg / max / min).
+
+### 4. Patient phone page (`/hr`)
+Public route — no auth, no `(patient)` group; the strap IS the credential.
+Multi-screen flow: `pair → unmapped warning OR identified → pre-workout (machine picker) → during-workout → post-workout`.
+- **Pair**: tap → `requestDevice` chooser → identify by `device_name`.
+- **Unmapped**: shows the device name verbatim with copy for the clinician to register.
+- **During workout**: 5rem live HR readout, zone pill (blinks red above zone), 3-stat grid (elapsed / avg / max), 180-sample sparkline, big red End button.
+- **Strap-disconnect grace**: 30s reconnect banner with countdown; auto-resume if it comes back, auto-end-as-aborted otherwise.
+- **Wake Lock**: acquired on Start, re-acquired on `visibilitychange` because Android Chrome revokes it when backgrounded.
+- **Sample flow**: 1 Hz tick captures `[t_offset_sec, hr|null]` → IDB pending buffer + 10s batched RPC append. Best-effort 3× retry on End; `idbClearPending` on success.
+- **Auto-stop**: 2-hour `setTimeout` to safety-end runaway sessions.
+- **`beforeunload`**: warns if a workout is in progress.
+
+### 5. React 19 lint quirks worked around
+- `react-hooks/refs` (no ref reads during render): dashboard converted from a `tick`-counter pattern to explicit useState snapshots updated by a `recompute()` callback that runs from the 1 Hz timer and from realtime handlers. Patient page added a `stats` state object updated by the tick.
+- `react-hooks/purity` (no `Date.now()` during render): the dashboard cards now receive `nowMs` as a prop computed once per recompute by the parent.
+- `react-hooks/immutability` (can't reassign `*Ref.current` patterns flagged when used to hold a callback): `endWorkoutRef.current = endWorkout` left intact under an inline `eslint-disable` because the latest-ref pattern is exactly what the design needs.
+- `react-hooks/set-state-in-effect`: load-on-mount patterns use the same disable comment that the existing `CalendarClient` uses.
+
+### 6. Wiring
+- Clinician dashboard (`/clinician`) gained a third nav card: HR Monitoring → `/clinician/hr`.
+- `proxy.ts` was not modified — the existing `/clinician/*` rule covers the new clinician routes; `/hr` is intentionally not under `/patient` or `/clinician` so it stays public.
+
+**Key files:** `db/migrations/0009_hr_monitoring.sql` (new), `lib/supabase/types.ts` (regenerated with hr_patients/hr_workouts/hr_append_samples), `lib/hr/hrSupabase.ts` (new), `lib/hr/hrMonitor.ts` (new), `app/(clinician)/clinician/hr/page.tsx` (new), `app/(clinician)/clinician/hr/patients/{page,HrPatientsClient}.tsx` (new), `app/(clinician)/clinician/hr/dashboard/{page,HrDashboardClient}.tsx` (new), `app/(clinician)/clinician/hr/history/{page,HrHistoryClient}.tsx` (new), `app/(clinician)/clinician/hr/history/[patientId]/{page,HrPatientHistoryClient}.tsx` (new), `app/(clinician)/clinician/hr/workout/[workoutId]/{page,HrWorkoutDetailClient}.tsx` (new), `app/hr/{page,HrPatientClient}.tsx` (new), `app/(clinician)/clinician/page.tsx` (added nav card)
