@@ -19,8 +19,6 @@ export type PrescriptionItemDetail = {
   reps_per_set: number
   rest_seconds: number
   exercise_name: string
-  exercise_joint: string
-  exercise_side: string
 }
 
 export async function markMissedAction(patientId: string): Promise<void> {
@@ -36,7 +34,7 @@ export async function markMissedAction(patientId: string): Promise<void> {
 export async function getMonthPrescriptionsAction(
   patientId: string,
   year: number,
-  month: number // 0-indexed
+  month: number
 ): Promise<MonthPrescription[]> {
   const mm = String(month + 1).padStart(2, '0')
   const startDate = `${year}-${mm}-01`
@@ -66,13 +64,13 @@ export async function getPrescriptionItemsAction(
   const { data } = await supabaseServer
     .from('prescription_items')
     .select(
-      'id, sequence_order, num_sets, reps_per_set, rest_seconds, exercises(name, primary_joint, primary_side)'
+      'id, sequence_order, num_sets, reps_per_set, rest_seconds, exercises(name)'
     )
     .eq('prescription_id', prescriptionId)
     .order('sequence_order')
 
   return (data ?? []).map((item) => {
-    const ex = item.exercises as { name: string; primary_joint: string; primary_side: string } | null
+    const ex = item.exercises as { name: string } | null
     return {
       id: item.id,
       sequence_order: item.sequence_order,
@@ -80,8 +78,6 @@ export async function getPrescriptionItemsAction(
       reps_per_set: item.reps_per_set,
       rest_seconds: item.rest_seconds,
       exercise_name: ex?.name ?? 'Unknown',
-      exercise_joint: ex?.primary_joint ?? '',
-      exercise_side: ex?.primary_side ?? '',
     }
   })
 }
@@ -91,10 +87,6 @@ export interface PrescriptionItemInput {
   num_sets: number
   reps_per_set: number
   rest_seconds: number
-  override_start_angle_min: number | null
-  override_start_angle_max: number | null
-  override_end_angle_min: number | null
-  override_end_angle_max: number | null
 }
 
 export interface PrescriptionPayload {
@@ -112,7 +104,6 @@ export async function updatePrescriptionAction(args: {
   hrUpperLimitBpm: number
   items: PrescriptionItemInput[]
 }): Promise<{ ok: false; error: string } | { ok: true }> {
-  // Block if sessions exist (same guard as delete).
   const { count: sessionCount, error: sessErr } = await supabaseServer
     .from('sessions')
     .select('*', { count: 'exact', head: true })
@@ -121,7 +112,6 @@ export async function updatePrescriptionAction(args: {
   if ((sessionCount ?? 0) > 0)
     return { ok: false, error: 'Cannot edit: this routine already has session history.' }
 
-  // Update the prescription header.
   const { error: updateErr } = await supabaseServer
     .from('prescriptions')
     .update({ scheduled_date: args.scheduledDate, hr_upper_limit_bpm: args.hrUpperLimitBpm })
@@ -129,7 +119,6 @@ export async function updatePrescriptionAction(args: {
     .eq('patient_id', args.patientId)
   if (updateErr) return { ok: false, error: updateErr.message }
 
-  // Replace all items.
   const { error: delErr } = await supabaseServer
     .from('prescription_items')
     .delete()
@@ -144,10 +133,6 @@ export async function updatePrescriptionAction(args: {
       num_sets: item.num_sets,
       reps_per_set: item.reps_per_set,
       rest_seconds: item.rest_seconds,
-      override_start_angle_min: item.override_start_angle_min,
-      override_start_angle_max: item.override_start_angle_max,
-      override_end_angle_min: item.override_end_angle_min,
-      override_end_angle_max: item.override_end_angle_max,
     }))
     const { error: insertErr } = await supabaseServer.from('prescription_items').insert(rows)
     if (insertErr) return { ok: false, error: insertErr.message }
@@ -182,10 +167,6 @@ export async function createPrescriptionAction(
       num_sets: item.num_sets,
       reps_per_set: item.reps_per_set,
       rest_seconds: item.rest_seconds,
-      override_start_angle_min: item.override_start_angle_min,
-      override_start_angle_max: item.override_start_angle_max,
-      override_end_angle_min: item.override_end_angle_min,
-      override_end_angle_max: item.override_end_angle_max,
     }))
 
     const { error: itemsErr } = await supabaseServer
@@ -198,12 +179,6 @@ export async function createPrescriptionAction(
   redirect(`/clinician/patients/${data.patient_id}`)
 }
 
-/**
- * Delete a scheduled prescription (a day's routine) for a patient. Allowed
- * only when no `sessions` row references this prescription — otherwise the
- * sessions FK would break and the historical record would be orphaned.
- * `prescription_items` get cleaned up via ON DELETE CASCADE.
- */
 export async function deletePrescriptionAction(args: {
   prescriptionId: string
   patientId: string
@@ -237,7 +212,6 @@ export async function bulkDeletePrescriptionsAction(args: {
 }): Promise<{ ok: true; deleted: number } | { ok: false; error: string }> {
   if (args.prescriptionIds.length === 0) return { ok: true, deleted: 0 }
 
-  // Check none of the prescriptions have session history.
   const { count: sessionCount, error: sessErr } = await supabaseServer
     .from('sessions')
     .select('*', { count: 'exact', head: true })

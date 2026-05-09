@@ -267,7 +267,7 @@ export default function CalendarClient() {
                       {card.exerciseName}
                     </p>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Set {card.setNum} of {card.totalSets} · {card.repsTarget} reps
+                      Set {card.setNum} of {card.totalSets} · target {card.repsTarget} reps
                     </p>
                   </div>
                   <span className="text-slate-300 text-lg flex-shrink-0">›</span>

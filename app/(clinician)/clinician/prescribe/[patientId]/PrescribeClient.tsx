@@ -4,16 +4,12 @@ import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { useAuthStore } from '@/lib/store/auth'
 import { createPrescriptionAction } from '@/app/actions/prescriptions'
+import type { TrackedJointSpec } from '@/app/actions/exercises'
 
 interface Exercise {
   id: string
   name: string
-  primary_joint: string
-  primary_side: string
-  start_angle_min: number
-  start_angle_max: number
-  end_angle_min: number
-  end_angle_max: number
+  tracked_joints: unknown
 }
 
 interface Patient {
@@ -28,15 +24,10 @@ interface PrescriptionItem {
   numSets: number
   repsPerSet: number
   restSeconds: number
-  showOverrides: boolean
-  overrideStartMin: string
-  overrideStartMax: string
-  overrideEndMin: string
-  overrideEndMax: string
 }
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-const DEFAULT_DAYS = new Set([1, 3, 5]) // Mon, Wed, Fri
+const DEFAULT_DAYS = new Set([1, 3, 5])
 
 function nextMondayStr(): string {
   const d = new Date()
@@ -73,6 +64,15 @@ function formatDate(dateStr: string) {
   })
 }
 
+function describeTracked(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return 'no joints tracked'
+  const list = (raw as TrackedJointSpec[]).filter(
+    (t) => t && typeof t.joint === 'string' && typeof t.side === 'string',
+  )
+  if (list.length === 0) return 'no joints tracked'
+  return list.map((t) => `${t.side} ${t.joint}`).join(', ')
+}
+
 export default function PrescribeClient({
   patient,
   exercises,
@@ -96,7 +96,6 @@ export default function PrescribeClient({
     [startDateStr, selectedDays, numWeeks]
   )
 
-  // Group dates by week for preview
   const datesByWeek = useMemo(() => {
     const map = new Map<number, string[]>()
     for (const d of scheduledDates) {
@@ -126,11 +125,6 @@ export default function PrescribeClient({
         numSets: 3,
         repsPerSet: 10,
         restSeconds: 30,
-        showOverrides: false,
-        overrideStartMin: '',
-        overrideStartMax: '',
-        overrideEndMin: '',
-        overrideEndMax: '',
       },
     ])
   }
@@ -156,18 +150,9 @@ export default function PrescribeClient({
   }
 
   async function handleSave() {
-    if (scheduledDates.length === 0) {
-      setError('Select at least one day and one week.')
-      return
-    }
-    if (items.length === 0) {
-      setError('Add at least one exercise.')
-      return
-    }
-    if (!user) {
-      setError('Not logged in.')
-      return
-    }
+    if (scheduledDates.length === 0) { setError('Select at least one day and one week.'); return }
+    if (items.length === 0) { setError('Add at least one exercise.'); return }
+    if (!user) { setError('Not logged in.'); return }
 
     setSaving(true)
     setError(null)
@@ -177,20 +162,12 @@ export default function PrescribeClient({
       prescribed_by: user.id,
       hr_upper_limit_bpm: hrLimit,
       scheduled_dates: scheduledDates,
-      items: items.map((item) => {
-        const ex = exercises.find((e) => e.id === item.exerciseId)!
-        const toNum = (v: string, fallback: number) => (v === '' ? null : parseFloat(v) ?? fallback)
-        return {
-          exercise_id: item.exerciseId,
-          num_sets: item.numSets,
-          reps_per_set: item.repsPerSet,
-          rest_seconds: item.restSeconds,
-          override_start_angle_min: item.showOverrides ? toNum(item.overrideStartMin, ex.start_angle_min) : null,
-          override_start_angle_max: item.showOverrides ? toNum(item.overrideStartMax, ex.start_angle_max) : null,
-          override_end_angle_min: item.showOverrides ? toNum(item.overrideEndMin, ex.end_angle_min) : null,
-          override_end_angle_max: item.showOverrides ? toNum(item.overrideEndMax, ex.end_angle_max) : null,
-        }
-      }),
+      items: items.map((item) => ({
+        exercise_id: item.exerciseId,
+        num_sets: item.numSets,
+        reps_per_set: item.repsPerSet,
+        rest_seconds: item.restSeconds,
+      })),
     }
 
     const result = await createPrescriptionAction(payload)
@@ -198,7 +175,6 @@ export default function PrescribeClient({
       setError(result.error)
       setSaving(false)
     }
-    // On success, server action redirects — component unmounts
   }
 
   return (
@@ -211,8 +187,6 @@ export default function PrescribeClient({
       </header>
 
       <main className="mx-auto max-w-3xl p-6 space-y-6">
-
-        {/* HR limit */}
         <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
           <h2 className="font-semibold text-slate-800">Heart Rate Limit</h2>
           <label className="flex items-center gap-3 text-sm text-slate-600">
@@ -229,7 +203,6 @@ export default function PrescribeClient({
           </label>
         </section>
 
-        {/* Schedule */}
         <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
           <h2 className="font-semibold text-slate-800">Schedule</h2>
 
@@ -277,9 +250,12 @@ export default function PrescribeClient({
           </label>
         </section>
 
-        {/* Exercises */}
         <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
           <h2 className="font-semibold text-slate-800">Exercises</h2>
+          <p className="text-xs text-slate-400 -mt-2">
+            Sets/reps are shown to the patient as guidance — the recording itself runs from O-pose
+            (start) to T-pose (end), without auto-counting reps.
+          </p>
 
           {exercises.length === 0 ? (
             <p className="text-sm text-slate-400">
@@ -298,7 +274,7 @@ export default function PrescribeClient({
                 >
                   {exercises.map((ex) => (
                     <option key={ex.id} value={ex.id}>
-                      {ex.name} ({ex.primary_joint}, {ex.primary_side})
+                      {ex.name} ({describeTracked(ex.tracked_joints)})
                     </option>
                   ))}
                 </select>
@@ -327,7 +303,7 @@ export default function PrescribeClient({
                         <div>
                           <p className="font-medium text-slate-800">{ex.name}</p>
                           <p className="text-xs text-slate-400 capitalize">
-                            {ex.primary_joint} · {ex.primary_side}
+                            {describeTracked(ex.tracked_joints)}
                           </p>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
@@ -393,63 +369,6 @@ export default function PrescribeClient({
                           />
                         </label>
                       </div>
-
-                      <button
-                        type="button"
-                        onClick={() => updateItem(item.key, 'showOverrides', !item.showOverrides)}
-                        className="text-xs text-blue-600 hover:underline"
-                      >
-                        {item.showOverrides ? '− Hide' : '+ Override'} angle thresholds for this patient
-                      </button>
-
-                      {item.showOverrides && (
-                        <div className="grid grid-cols-2 gap-3 text-sm">
-                          <div className="space-y-1">
-                            <p className="text-xs text-slate-500">
-                              Start zone (°) — default {ex.start_angle_min}–{ex.start_angle_max}
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                placeholder={String(ex.start_angle_min)}
-                                value={item.overrideStartMin}
-                                onChange={(e) => updateItem(item.key, 'overrideStartMin', e.target.value)}
-                                className="w-20 rounded border border-slate-300 px-2 py-1 text-center text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                              <span className="text-slate-400">–</span>
-                              <input
-                                type="number"
-                                placeholder={String(ex.start_angle_max)}
-                                value={item.overrideStartMax}
-                                onChange={(e) => updateItem(item.key, 'overrideStartMax', e.target.value)}
-                                className="w-20 rounded border border-slate-300 px-2 py-1 text-center text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-xs text-slate-500">
-                              End zone (°) — default {ex.end_angle_min}–{ex.end_angle_max}
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                placeholder={String(ex.end_angle_min)}
-                                value={item.overrideEndMin}
-                                onChange={(e) => updateItem(item.key, 'overrideEndMin', e.target.value)}
-                                className="w-20 rounded border border-slate-300 px-2 py-1 text-center text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                              <span className="text-slate-400">–</span>
-                              <input
-                                type="number"
-                                placeholder={String(ex.end_angle_max)}
-                                value={item.overrideEndMax}
-                                onChange={(e) => updateItem(item.key, 'overrideEndMax', e.target.value)}
-                                className="w-20 rounded border border-slate-300 px-2 py-1 text-center text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )
                 })}
@@ -458,7 +377,6 @@ export default function PrescribeClient({
           )}
         </section>
 
-        {/* Calendar preview */}
         {scheduledDates.length > 0 && (
           <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
             <h2 className="font-semibold text-slate-800">
@@ -484,7 +402,6 @@ export default function PrescribeClient({
           </section>
         )}
 
-        {/* Error + Save */}
         {error && (
           <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
         )}

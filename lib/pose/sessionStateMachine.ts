@@ -1,532 +1,175 @@
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
-import { RepDetector, type RepConfig, type RepEvent } from './repDetector'
+import { OPoseDetector } from './oposeDetector'
 import { TPoseDetector } from './tposeDetector'
-import { JOINT_TRIPLETS } from './landmarks'
-import { getJointAngle } from './angles'
-
-type ViewOrientation = 'front' | 'side'
-import {
-  startReadyCue, repCue, restCue, nextExerciseCue,
-  pauseCue, resumeReadyCue, sessionCompleteCue,
-  type PauseReason,
-} from '../audio/cues'
-
-export type { PauseReason, RepEvent }
-
-/** Visibility threshold (0..1) for a landmark to count as "in frame" for buffer recording. */
-const VISIBILITY_THRESHOLD = 0.5
-/** Looser threshold used for joint-specific gating (rep detection / pause trigger). */
-const JOINT_VISIBILITY_THRESHOLD = 0.3
-/** Sustained joint-occluded visibility that triggers an out_of_frame pause during ACTIVE. */
-const PARTIAL_BODY_PAUSE_MS = 2_000
+import { startReadyCue, sessionCompleteCue } from '../audio/cues'
 
 /**
- * Body-only landmarks: shoulders, elbows, wrists, hips, knees, ankles, foot index.
- * Skips face (0-10), fingers (17-22), heels (29-30) — these flicker even when the
- * patient is fully visible to the camera and aren't used for joint-angle math.
+ * Visibility threshold (0..1) every one of the 33 landmarks must clear before
+ * we accept the start gesture. Recording itself does NOT pause if the body
+ * temporarily exits the frame — gaps are simply gaps in the timeline.
  */
-const BODY_LANDMARK_INDICES = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32] as const
+const VISIBILITY_THRESHOLD = 0.5
 
+/** True iff every landmark has visibility ≥ VISIBILITY_THRESHOLD. */
 export function isFullyInFrame(landmarks: NormalizedLandmark[]): boolean {
   if (landmarks.length < 33) return false
-  for (const i of BODY_LANDMARK_INDICES) {
+  for (let i = 0; i < 33; i++) {
     const v = landmarks[i]?.visibility
     if (v === undefined || v < VISIBILITY_THRESHOLD) return false
   }
   return true
 }
 
-/** Check that the specific triplet (proximal, joint, distal) all meet a visibility floor. */
-function isTripletVisible(
-  landmarks: NormalizedLandmark[],
-  triplet: readonly [number, number, number],
-  threshold: number,
-): boolean {
-  for (const i of triplet) {
-    const v = landmarks[i]?.visibility
-    if (v === undefined || v < threshold) return false
-  }
-  return true
+export type SessionPhase = 'IDLE' | 'READY' | 'RECORDING' | 'COMPLETE'
+
+/** A "joint of interest" the clinician asked to track on this exercise. */
+export interface TrackedJoint {
+  joint: 'knee' | 'hip' | 'shoulder' | 'elbow' | 'ankle'
+  side: 'left' | 'right'
 }
 
-/**
- * True when the landmarks needed to score the configured joint(s) are reliable.
- * Only the rep-relevant joint must be visible — a deep squat that hides the
- * face or fingers shouldn't block rep detection.
- */
-function isRepJointVisible(landmarks: NormalizedLandmark[], cfg: RepConfig): boolean {
-  const primary = JOINT_TRIPLETS[cfg.primaryJoint]
-  if (!primary) return false
-  const sideOk = (side: 'left' | 'right' | 'both', t: typeof primary): boolean => {
-    if (side === 'both') {
-      return (
-        isTripletVisible(landmarks, t.left, JOINT_VISIBILITY_THRESHOLD) ||
-        isTripletVisible(landmarks, t.right, JOINT_VISIBILITY_THRESHOLD)
-      )
-    }
-    return isTripletVisible(landmarks, t[side], JOINT_VISIBILITY_THRESHOLD)
-  }
-  if (!sideOk(cfg.primarySide, primary)) return false
-  if (cfg.secondaryJoint) {
-    const secondary = JOINT_TRIPLETS[cfg.secondaryJoint]
-    if (secondary && !sideOk(cfg.primarySide, secondary)) return false
-  }
-  return true
-}
-
-export type SessionPhase =
-  | 'IDLE' | 'READY' | 'ACTIVE' | 'PAUSED'
-  | 'SET_COMPLETE' | 'RESTING' | 'SESSION_COMPLETE'
-
-export interface SetEntry {
+export interface ExerciseEntry {
   prescriptionItemId: string
   exerciseId: string
-  itemIndex: number
-  setNumber: number    // 1-based
-  totalSets: number
   exerciseName: string
-  repConfig: RepConfig
-  repsTarget: number
-  restSeconds: number
+  trackedJoints: TrackedJoint[]
+  /** Free-text guidance e.g. "3 sets × 10 reps · rest 30 s". Display-only. */
+  guidance: string
   referenceGifUrl: string | null
-  isLastSetOfItem: boolean
-  isLastSet: boolean
-  nextExerciseName: string | null
-  /** Persisted on the exercise but no longer gated at runtime. */
-  viewOrientation: ViewOrientation
+  instructionsText: string | null
+  /** Position of this exercise within the prescription (0-based). */
+  itemIndex: number
 }
 
-export type SetEndReason = 'reps_complete' | 't_pose' | 'abandoned'
-
 export interface SessionEvents {
-  onSetStart?: (e: { setIdx: number; set: SetEntry; ts_ms: number }) => void
-  onSetEnd?: (e: {
-    setIdx: number
-    set: SetEntry
-    ts_ms: number
-    reason: SetEndReason
-    repsCompleted: number
-  }) => void
-  onRepComplete?: (e: { setIdx: number; repNumber: number; rep: RepEvent }) => void
-  onPauseStart?: (e: { reason: PauseReason; ts_ms: number }) => void
-  onPauseEnd?: (e: { ts_ms: number }) => void
+  onRecordingStart?: (e: { ts_ms: number }) => void
+  onRecordingEnd?: (e: { ts_ms: number; reason: 't_pose' | 'abandoned' }) => void
   onSessionEnd?: (e: { ts_ms: number }) => void
 }
 
 export interface SessionSnapshot {
   phase: SessionPhase
-  set: SetEntry
-  repsCompleted: number
-  pauseReason: PauseReason | null
-  tposeProgress: number
-  restSecondsLeft: number
-  hrBpm: number | null
-  /** Seconds left on the pre-set countdown during READY (3 → 0). 0 outside READY. */
-  countdownSecondsLeft: number
-  completedReps: RepEvent[]
-  /** True while in READY iff the latest pose has the body landmarks visible. UI uses this to coach the user. */
+  exercise: ExerciseEntry
+  /** True while in READY iff every landmark in the latest pose is visible. */
   fullyInFrame: boolean
-  /** Live primary-joint angle in degrees, or null when joint not visible. Surfaced for the in-session HUD. */
-  primaryAngleDegrees: number | null
-  /** Live secondary-joint angle in degrees (or null if no secondary configured / not visible). */
-  secondaryAngleDegrees: number | null
+  /** Progress 0..1 on the O-pose hold. Resets to 0 if the pose is broken. */
+  oposeProgress: number
+  /** Progress 0..1 on the T-pose hold during RECORDING. */
+  tposeProgress: number
+  hrBpm: number | null
 }
 
+/**
+ * Single-recording session state machine.
+ *
+ *   IDLE  → start()  → READY
+ *   READY (all 33 landmarks visible AND O-pose held 1.5 s) → RECORDING
+ *   RECORDING (T-pose held 1.5 s) → COMPLETE
+ *   RECORDING + endRecordingEarly() → COMPLETE
+ *
+ * No automatic pauses. If the body leaves the frame mid-recording the
+ * timeline simply has a gap.
+ */
 export class SessionStateMachine {
   private phase: SessionPhase = 'IDLE'
-  private setIdx: number
-  private repsCompleted = 0
-  private completedReps: RepEvent[] = []
-  private pauseReason: PauseReason | null = null
-  private tposeProgress = 0
-  private restSecondsLeft = 0
   private destroyed = false
-
-  private repDetector: RepDetector | null = null
-  private tposeDetector: TPoseDetector
-
-  private latestHr: number | null = null
-  private hrBreachStart: number | null = null
-  private hrRecoveryStart: number | null = null
-  private hrOkForResume = false
-
-  private personCount = 1
-  private outOfFrameStart: number | null = null
-  private multiPersonStart: number | null = null
-  /** Sustained partial-body visibility timer during ACTIVE. */
-  private partialBodyStart: number | null = null
-
-  // READY view state — surfaced in snapshots so the UI can coach the patient.
   private fullyInFrame = false
-  private countdownSecondsLeft = 0
+  private oposeProgress = 0
+  private tposeProgress = 0
+  private latestHr: number | null = null
 
-  // Live joint-angle readout for the patient HUD.
-  private primaryAngleDegrees: number | null = null
-  private secondaryAngleDegrees: number | null = null
-
-  private restInterval: ReturnType<typeof setInterval> | null = null
-  private countdownInterval: ReturnType<typeof setInterval> | null = null
+  private readonly oposeDetector: OPoseDetector
+  private readonly tposeDetector: TPoseDetector
 
   constructor(
-    private readonly sets: SetEntry[],
-    startSetIdx: number,
-    private readonly hrLimit: number,
+    private readonly exercise: ExerciseEntry,
     private readonly onChange: (snap: SessionSnapshot) => void,
     private readonly events: SessionEvents = {},
   ) {
-    this.setIdx = startSetIdx
+    this.oposeDetector = new OPoseDetector(() => this.onOPoseDetected())
     this.tposeDetector = new TPoseDetector(() => this.onTPoseDetected())
   }
 
-  private get cur(): SetEntry { return this.sets[this.setIdx] }
-
   start(): void {
     if (this.phase !== 'IDLE') return
-    this.enterReady()
+    this.phase = 'READY'
+    this.oposeDetector.reset()
+    this.tposeDetector.reset()
+    this.oposeProgress = 0
+    this.tposeProgress = 0
+    startReadyCue()
     this.emit()
   }
 
   feedPose(landmarks: NormalizedLandmark[], timestamp_ms: number): void {
-    const fully = isFullyInFrame(landmarks)
-    this.fullyInFrame = fully
-    // Joint-specific gate: even on partial-body frames, run rep detection so
-    // long as the joint(s) being scored are visible. (A deep squat that hides
-    // the face shouldn't block knee-angle detection.)
-    const jointVisible = isRepJointVisible(landmarks, this.cur.repConfig)
+    this.fullyInFrame = isFullyInFrame(landmarks)
 
-    // Live angle readout for the in-session HUD. Computed every frame so the
-    // patient sees their angle even while paused (out-of-frame coaching, etc).
-    const cfg = this.cur.repConfig
-    this.primaryAngleDegrees = getJointAngle(landmarks, cfg.primaryJoint, cfg.primarySide)
-    this.secondaryAngleDegrees = cfg.secondaryJoint
-      ? getJointAngle(landmarks, cfg.secondaryJoint, cfg.primarySide)
-      : null
-
-    if (this.phase === 'ACTIVE') {
-      if (jointVisible) {
-        this.partialBodyStart = null
-        this.repDetector?.feed(landmarks, this.latestHr, timestamp_ms)
-        this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
+    if (this.phase === 'READY') {
+      // Only feed the O-pose detector once the whole body is visible.
+      // A wrist-only glimpse shouldn't accrue progress.
+      if (this.fullyInFrame) {
+        this.oposeProgress = this.oposeDetector.feed(landmarks, timestamp_ms)
       } else {
-        if (this.partialBodyStart === null) this.partialBodyStart = timestamp_ms
-        else if (timestamp_ms - this.partialBodyStart >= PARTIAL_BODY_PAUSE_MS) {
-          this.enterPaused('out_of_frame')
-        }
+        this.oposeDetector.reset()
+        this.oposeProgress = 0
       }
-    } else if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach') {
+    } else if (this.phase === 'RECORDING') {
       this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
-    } else if (this.phase === 'PAUSED' && this.pauseReason === 'out_of_frame') {
-      // Auto-resume once the relevant joint is reliably visible again.
-      if (jointVisible && this.personCount === 1) this.resumeFromPause()
-    } else if (this.phase === 'READY') {
-      // Once the countdown has finished and the patient is fully in frame
-      // (single person), start the set.
-      this.tryStartActive()
     }
+
     this.emit()
   }
 
-  private tryStartActive(): void {
-    if (this.phase !== 'READY') return
-    if (this.countdownSecondsLeft > 0) return
-    if (!this.fullyInFrame || this.personCount !== 1) return
-    this.enterActive()
-  }
-
-  feedHR(hr_bpm: number, timestamp_ms: number): void {
-    // Always surface the raw value to the UI; clinicians can see the dropouts.
+  feedHR(hr_bpm: number): void {
     this.latestHr = hr_bpm
-
-    // …but only let the breach/recovery state machine react to physiologically
-    // plausible readings. H10 emits 0 (and occasional spikes) during signal
-    // loss; using those would either spuriously pause the session (false high)
-    // or auto-resume from a real breach (false low).
-    const plausible = hr_bpm >= 40 && hr_bpm <= 220
-    if (!plausible) {
-      this.emit()
-      return
-    }
-
-    if (this.phase === 'ACTIVE') {
-      if (hr_bpm > this.hrLimit) {
-        if (this.hrBreachStart === null) this.hrBreachStart = timestamp_ms
-        else if (timestamp_ms - this.hrBreachStart >= 20_000) {
-          this.enterPaused('hr_breach')
-        }
-      } else {
-        this.hrBreachStart = null
-      }
-    }
-
-    if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach') {
-      if (hr_bpm < this.hrLimit - 10) {
-        if (this.hrRecoveryStart === null) this.hrRecoveryStart = timestamp_ms
-        if (timestamp_ms - this.hrRecoveryStart >= 10_000) this.hrOkForResume = true
-      } else {
-        this.hrRecoveryStart = null
-        this.hrOkForResume = false
-      }
-    }
-
     this.emit()
   }
 
-  setPersonCount(count: number, timestamp_ms: number): void {
-    this.personCount = count
-
-    if (this.phase === 'ACTIVE') {
-      if (count === 0) {
-        if (this.outOfFrameStart === null) this.outOfFrameStart = timestamp_ms
-        else if (timestamp_ms - this.outOfFrameStart >= 2_000) this.enterPaused('out_of_frame')
-      } else {
-        this.outOfFrameStart = null
-      }
-
-      if (count >= 2) {
-        if (this.multiPersonStart === null) this.multiPersonStart = timestamp_ms
-        else if (timestamp_ms - this.multiPersonStart >= 2_000) this.enterPaused('multiple_people')
-      } else {
-        this.multiPersonStart = null
-      }
-    }
-
-    if (
-      this.phase === 'PAUSED' &&
-      (this.pauseReason === 'out_of_frame' || this.pauseReason === 'multiple_people') &&
-      count === 1
-    ) {
-      this.resumeFromPause()
-    }
-
-    this.emit()
-  }
-
-  setH10Connected(connected: boolean): void {
-    const wasConnected = this.personCount >= 0 // dummy — track via separate flag below
-    void wasConnected
-    if (!connected && this.phase === 'ACTIVE') {
-      this.enterPaused('h10_disconnect')
-    }
-    if (connected && this.phase === 'PAUSED' && this.pauseReason === 'h10_disconnect') {
-      this.resumeFromPause()
-    }
-    this.emit()
+  /** End an in-progress recording immediately (e.g. user tapped "End"). */
+  endRecordingEarly(): void {
+    if (this.phase !== 'RECORDING') return
+    this.endRecording('abandoned')
   }
 
   destroy(): void {
     this.destroyed = true
-    this.clearRestTimer()
-    this.clearCountdownTimer()
   }
 
-  private enterReady(): void {
-    this.phase = 'READY'
-    this.repsCompleted = 0
-    this.completedReps = []
+  private onOPoseDetected(): void {
+    if (this.phase !== 'READY') return
+    this.phase = 'RECORDING'
+    this.oposeProgress = 0
     this.tposeProgress = 0
     this.tposeDetector.reset()
-    this.partialBodyStart = null
-    this.countdownSecondsLeft = 3
-    startReadyCue()
-    this.startCountdownTimer()
-  }
-
-  private startCountdownTimer(): void {
-    this.clearCountdownTimer()
-    this.countdownInterval = setInterval(() => {
-      if (this.destroyed) { this.clearCountdownTimer(); return }
-      this.countdownSecondsLeft = Math.max(0, this.countdownSecondsLeft - 1)
-      if (this.countdownSecondsLeft === 0) {
-        this.clearCountdownTimer()
-        this.tryStartActive()
-      }
-      this.emit()
-    }, 1000)
-  }
-
-  private clearCountdownTimer(): void {
-    if (this.countdownInterval !== null) {
-      clearInterval(this.countdownInterval)
-      this.countdownInterval = null
-    }
-  }
-
-  private enterActive(): void {
-    const wasReady = this.phase === 'READY'
-    this.phase = 'ACTIVE'
-    this.hrBreachStart = null
-    this.outOfFrameStart = null
-    this.multiPersonStart = null
-    this.partialBodyStart = null
-    this.clearCountdownTimer()
-    this.countdownSecondsLeft = 0
-    this.repDetector = new RepDetector(this.cur.repConfig, (ev) => this.onRepComplete(ev))
-    this.tposeDetector.reset()
-    // Only fire onSetStart when transitioning from READY (not from PAUSED → ACTIVE).
-    if (wasReady) {
-      this.events.onSetStart?.({ setIdx: this.setIdx, set: this.cur, ts_ms: performance.now() })
-    }
-  }
-
-  private onRepComplete(ev: RepEvent): void {
-    this.repsCompleted++
-    this.completedReps = [...this.completedReps, ev]
-    repCue()
-    this.events.onRepComplete?.({ setIdx: this.setIdx, repNumber: this.repsCompleted, rep: ev })
-    if (this.repsCompleted >= this.cur.repsTarget) {
-      this.enterSetComplete('reps_complete')
-    }
-  }
-
-  private onTPoseDetected(): void {
-    if (this.phase === 'ACTIVE') {
-      // T-pose during a working set ends the entire workout. The current set
-      // is closed with reason='t_pose'; remaining sets are skipped.
-      this.endSession('t_pose')
-      this.emit()
-    } else if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach' && this.hrOkForResume) {
-      this.resumeFromPause()
-      this.emit()
-    }
-  }
-
-  /**
-   * Public API — end the workout immediately, regardless of phase.
-   * If a set is currently underway it is closed with the given reason.
-   * Subsequent sets are skipped; SESSION_COMPLETE fires after a brief delay
-   * so the data buffer can flush downstream events.
-   */
-  endSessionEarly(reason: SetEndReason = 'abandoned'): void {
-    this.endSession(reason)
+    this.events.onRecordingStart?.({ ts_ms: performance.now() })
     this.emit()
   }
 
-  private endSession(reason: SetEndReason): void {
-    if (this.phase === 'SESSION_COMPLETE') return
-    // Close any in-progress set so the buffer has matching set-end metadata.
-    const inSet = this.phase === 'ACTIVE' || this.phase === 'PAUSED'
-    if (inSet) {
-      this.events.onSetEnd?.({
-        setIdx: this.setIdx,
-        set: this.cur,
-        ts_ms: performance.now(),
-        reason,
-        repsCompleted: this.repsCompleted,
-      })
-    }
-    this.repDetector = null
-    this.clearRestTimer()
-    this.clearCountdownTimer()
-    this.phase = 'SET_COMPLETE'
-    setTimeout(() => {
-      if (this.destroyed) return
-      this.phase = 'SESSION_COMPLETE'
-      sessionCompleteCue()
-      this.events.onSessionEnd?.({ ts_ms: performance.now() })
-      this.emit()
-    }, 1500)
+  private onTPoseDetected(): void {
+    if (this.phase !== 'RECORDING') return
+    this.endRecording('t_pose')
   }
 
-  private enterSetComplete(reason: SetEndReason): void {
-    this.phase = 'SET_COMPLETE'
-    this.repDetector = null
-    const done = this.cur
-    const completedAt = performance.now()
-    this.events.onSetEnd?.({
-      setIdx: this.setIdx,
-      set: done,
-      ts_ms: completedAt,
-      reason,
-      repsCompleted: this.repsCompleted,
-    })
-
-    if (done.isLastSet) {
-      setTimeout(() => {
-        if (this.destroyed) return
-        this.phase = 'SESSION_COMPLETE'
-        sessionCompleteCue()
-        this.events.onSessionEnd?.({ ts_ms: performance.now() })
-        this.emit()
-      }, 2000)
-      return
-    }
-
-    this.setIdx++
-
-    if (done.isLastSetOfItem) {
-      if (done.nextExerciseName) nextExerciseCue(done.nextExerciseName)
-      setTimeout(() => {
-        if (this.destroyed || this.phase !== 'SET_COMPLETE') return
-        this.enterReady()
-        this.emit()
-      }, 5000)
-    } else {
-      restCue(done.restSeconds)
-      this.restSecondsLeft = done.restSeconds
-      this.phase = 'RESTING'
-      this.startRestTimer()
-    }
-  }
-
-  private startRestTimer(): void {
-    this.clearRestTimer()
-    this.restInterval = setInterval(() => {
-      if (this.destroyed) { this.clearRestTimer(); return }
-      this.restSecondsLeft = Math.max(0, this.restSecondsLeft - 1)
-      if (this.restSecondsLeft === 0) {
-        this.clearRestTimer()
-        this.enterReady()
-      }
-      this.emit()
-    }, 1000)
-  }
-
-  private clearRestTimer(): void {
-    if (this.restInterval !== null) {
-      clearInterval(this.restInterval)
-      this.restInterval = null
-    }
-  }
-
-  private enterPaused(reason: PauseReason): void {
-    if (this.phase === 'PAUSED') return
-    this.phase = 'PAUSED'
-    this.pauseReason = reason
-    this.repDetector = null
-    this.clearRestTimer()
-    this.clearCountdownTimer()
-    pauseCue(reason)
-    if (reason === 'hr_breach') resumeReadyCue()
-    this.events.onPauseStart?.({ reason, ts_ms: performance.now() })
-  }
-
-  private resumeFromPause(): void {
-    this.hrBreachStart = null
-    this.hrRecoveryStart = null
-    this.hrOkForResume = false
-    this.outOfFrameStart = null
-    this.multiPersonStart = null
-    this.pauseReason = null
-    this.tposeDetector.reset()
-    this.events.onPauseEnd?.({ ts_ms: performance.now() })
-    this.enterReady()
+  private endRecording(reason: 't_pose' | 'abandoned'): void {
+    if (this.phase === 'COMPLETE') return
+    this.phase = 'COMPLETE'
+    this.tposeProgress = 0
+    const ts = performance.now()
+    this.events.onRecordingEnd?.({ ts_ms: ts, reason })
+    sessionCompleteCue()
+    this.events.onSessionEnd?.({ ts_ms: ts })
+    this.emit()
   }
 
   private emit(): void {
     if (this.destroyed) return
     this.onChange({
       phase: this.phase,
-      set: this.cur,
-      repsCompleted: this.repsCompleted,
-      pauseReason: this.pauseReason,
-      tposeProgress: this.tposeProgress,
-      restSecondsLeft: this.restSecondsLeft,
-      hrBpm: this.latestHr,
-      countdownSecondsLeft: this.countdownSecondsLeft,
-      completedReps: this.completedReps,
+      exercise: this.exercise,
       fullyInFrame: this.fullyInFrame,
-      primaryAngleDegrees: this.primaryAngleDegrees,
-      secondaryAngleDegrees: this.secondaryAngleDegrees,
+      oposeProgress: this.oposeProgress,
+      tposeProgress: this.tposeProgress,
+      hrBpm: this.latestHr,
     })
   }
 }

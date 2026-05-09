@@ -479,3 +479,56 @@ Patient feedback: the pre-set gauntlet (in-frame → orientation hold → O-pose
 - `SetEntry.viewOrientation` is preserved (DB still has the column; clinician demo still validates orientation during exercise creation), it just no longer gates the patient runtime.
 
 **Key files:** `lib/pose/sessionStateMachine.ts`, `lib/audio/cues.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`
+
+---
+
+## Phase 10 — Drop automatic rep tracking; "tracked joints" recording model
+
+Major architecture pivot at user request. The session runtime no longer counts reps, scores form, or pauses on HR/multi-person/out-of-frame events. The clinician simply names the joints they want to observe; the patient does an O-pose to start recording, a T-pose to stop. Stored data is the union of those joints' triplet landmarks — the rest of the 33-point skeleton is dropped.
+
+### 1. Schema (`db/migrations/0008_tracked_joints.sql`)
+- New column `exercises.tracked_joints jsonb not null default '[]'` — array of `{joint, side}`.
+- Made `start_angle_min/max`, `end_angle_min/max`, `direction`, and `session_sets.reps_target` nullable; new exercises don't write them at all. The columns stay so old playback bundles keep loading.
+- Migration applied to the live Supabase project (`bcykqaflsancmdiwrnak`); types regenerated.
+
+### 2. Pose / state machine (`lib/pose/`)
+- **Deleted** `repDetector.ts` and `orientationDetector.ts`.
+- **`oposeDetector.ts`** restored as the canonical start gesture (1.5 s sustained — wrists meeting above the head).
+- **`sessionStateMachine.ts`** rewritten end-to-end. Phases: `IDLE → READY → RECORDING → COMPLETE`. `READY → RECORDING` requires all 33 landmarks visible AND O-pose held. `RECORDING → COMPLETE` is fired by T-pose hold OR `endRecordingEarly()`. **No** auto-pause logic, **no** countdown, **no** rep callbacks. Exposes `oposeProgress` and `tposeProgress` for the UI rings.
+- **`landmarks.ts`** gained `trackedLandmarkIndices(tracked)` — dedupes the union of every joint's triplet indices, used by both writer and reader.
+- **`audio/cues.ts`** stripped to two cues: `startReadyCue()` ("Make a circle…") and `sessionCompleteCue()` ("Recording complete"). Pause/rep/rest cues deleted.
+
+### 3. Buffer / uploader
+- Pose frames are now **sparse**: `lm` is a `Record<number, [x,y,z]>` containing only the tracked-joint indices. `recordPoseFrame()` takes a `trackedIndices` array and writes only those landmarks.
+- Dexie schema bumped to v4: dropped the `reps` and `pauses` stores entirely (Dexie can null an existing store between versions).
+- `lib/sync/uploader.ts` no longer uploads `session_reps` or `session_pauses`. `session_sets` upload drops the `reps_completed`/`reps_target` math.
+- Loader (`lib/playback/loader.ts`) handles **both** sparse (new) and dense (old) `lm` shapes so historic sessions still play back.
+
+### 4. Patient session UX (`app/(patient)/patient/session/[prescriptionId]/run/`)
+- `SessionRunClient` rewritten. UI shows the exercise name + guidance ("Set 1 of 3 · target 10 reps") as static text. The right column is HR ring + tracked-joints chip list + live stickman + reference GIF.
+- READY overlay coaches "Step fully into the frame" until all 33 landmarks visible, then shows the O-pose ring. RECORDING overlay shows a red "Recording" pill plus the T-pose ring once the patient starts holding it.
+- "End recording" button on the top bar fires `endRecordingEarly()`. Resume-previous-session flow preserved.
+
+### 5. Exercise creation/edit (`app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`)
+- Form trimmed to: name, instructions, GIF, **5×2 grid of joint × side checkboxes**. No demo mode, no histogram, no thresholds, no direction picker, no view orientation, no secondary joint.
+- `createExerciseAction`/`updateExerciseAction` write only the tracked-joint set. `primary_joint` / `primary_side` still get filled (for legacy DB compatibility) from the first selected joint.
+- Library list (`/clinician/exercises`) now has columns: Name · Tracked joints · Created · ✕.
+
+### 6. Prescriptions
+- Sets/reps/rest stay in the prescription form as **guidance text only**. Per-patient angle overrides removed; the four `override_*_angle_*` columns are simply not written anymore.
+- `app/actions/prescriptions.ts`: `PrescriptionItemInput` shed the four override fields; `getPrescriptionItemsAction` returns just the exercise name.
+- Edit-prescription page reflects the simpler model.
+
+### 7. Playback
+- `lib/playback/loader.ts` returns `bundle.trackedJoints` (union across all sets) and `bundle.poses` with sparse landmarks. Reps/pauses dropped from the bundle entirely.
+- `StickmanCanvas` only draws the segments needed for the tracked joints (each joint contributes its proximal-joint and joint-distal bones). Sparse-aware lerp keeps the figure interpolating smoothly.
+- `MetricsTimeline` renders one HR chart + one angle chart **per tracked joint** (not just primary/secondary). Y-axis auto-fits each joint's actual range.
+- `SyncedScrubber` lost the pause-marker overlay. `RepTable`, `HRTimeline`, `JointAngleReadout` deleted.
+- Patient session-history table now shows Duration instead of total reps.
+
+### 8. What stayed
+- HR capture via Polar H10 (optional pre-record connect, samples streamed during RECORDING, played back as a chart).
+- IndexedDB buffer with offline-first uploads, retry, orphan flush — same hardening as Phase 7.1.
+- Calendar + per-set todo cards. Each card now opens a single recording (one O-pose-to-T-pose pass).
+
+**Key files:** `db/migrations/0008_tracked_joints.sql` (new), `lib/pose/sessionStateMachine.ts`, `lib/pose/landmarks.ts`, `lib/audio/cues.ts`, `lib/buffer/sessionBuffer.ts`, `lib/sync/uploader.ts`, `lib/playback/loader.ts`, `app/actions/exercises.ts`, `app/actions/prescriptions.ts`, `app/(clinician)/clinician/exercises/**`, `app/(clinician)/clinician/prescribe/[patientId]/PrescribeClient.tsx`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/prescriptions/[prescriptionId]/edit/**`, `app/(patient)/patient/session/[prescriptionId]/run/**`, `components/playback/{StickmanCanvas,MetricsTimeline,SyncedScrubber,PlaybackClient}.tsx`

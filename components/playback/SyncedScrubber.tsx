@@ -1,15 +1,5 @@
 'use client'
 
-import { useMemo } from 'react'
-import type { PlaybackPause } from '@/lib/playback/loader'
-
-const PAUSE_REASON_LABEL: Record<string, string> = {
-  hr_breach: 'HR breach',
-  h10_disconnect: 'H10 disconnect',
-  out_of_frame: 'Out of frame',
-  multiple_people: 'Multiple people',
-}
-
 function fmtMs(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000))
   const m = Math.floor(total / 60)
@@ -22,7 +12,6 @@ interface Props {
   durationMs: number
   isPlaying: boolean
   speed: number
-  pauses: PlaybackPause[]
   onSeek: (tMs: number) => void
   onTogglePlay: () => void
   onSpeedChange: (s: number) => void
@@ -33,27 +22,10 @@ export default function SyncedScrubber({
   durationMs,
   isPlaying,
   speed,
-  pauses,
   onSeek,
   onTogglePlay,
   onSpeedChange,
 }: Props) {
-  const markers = useMemo(() => {
-    if (durationMs <= 0) return []
-    return pauses
-      .filter((p) => p.pausedTMs >= 0)
-      .map((p) => {
-        const start = (p.pausedTMs / durationMs) * 100
-        const end = ((p.resumedTMs ?? p.pausedTMs + 1500) / durationMs) * 100
-        return {
-          id: p.id,
-          left: Math.max(0, Math.min(100, start)),
-          width: Math.max(0.5, Math.min(100, end) - Math.max(0, start)),
-          label: `${PAUSE_REASON_LABEL[p.reason] ?? p.reason} @ ${fmtMs(p.pausedTMs)}`,
-        }
-      })
-  }, [pauses, durationMs])
-
   const pct = durationMs > 0 ? (currentTMs / durationMs) * 100 : 0
 
   return (
@@ -98,18 +70,6 @@ export default function SyncedScrubber({
       </div>
 
       <div className="relative h-8">
-        {/* Pause markers (rendered behind the slider track) */}
-        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-2 -translate-y-1/2">
-          {markers.map((m) => (
-            <div
-              key={m.id}
-              className="absolute h-full rounded-sm bg-slate-300/80 hover:bg-slate-400"
-              style={{ left: `${m.left}%`, width: `${m.width}%` }}
-              title={m.label}
-            />
-          ))}
-        </div>
-        {/* Filled progress */}
         <div className="pointer-events-none absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-sm bg-slate-100">
           <div
             className="h-full rounded-sm bg-blue-500/40"
@@ -126,11 +86,6 @@ export default function SyncedScrubber({
           className="playback-scrubber relative z-10 h-8 w-full cursor-pointer appearance-none bg-transparent"
         />
       </div>
-      {markers.length > 0 && (
-        <p className="mt-2 text-xs text-slate-400">
-          Gray bars = pauses ({markers.length}). Hover for reason.
-        </p>
-      )}
       <style>{`
         .playback-scrubber::-webkit-slider-thumb {
           appearance: none;

@@ -1,11 +1,21 @@
 import Link from 'next/link'
 import { supabaseServer } from '@/lib/supabase/server'
 import DeleteExerciseButton from './DeleteExerciseButton'
+import type { TrackedJointSpec } from '@/app/actions/exercises'
+
+function describeTracked(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return '—'
+  const list = (raw as TrackedJointSpec[]).filter(
+    (t) => t && typeof t.joint === 'string' && typeof t.side === 'string',
+  )
+  if (list.length === 0) return '—'
+  return list.map((t) => `${t.side} ${t.joint}`).join(', ')
+}
 
 export default async function ExercisesPage() {
   const { data: exercises } = await supabaseServer
     .from('exercises')
-    .select('id, name, primary_joint, primary_side, direction, view_orientation, created_at')
+    .select('id, name, tracked_joints, created_at')
     .is('archived_at', null)
     .order('created_at', { ascending: false })
 
@@ -38,10 +48,7 @@ export default async function ExercisesPage() {
               <thead className="border-b border-slate-200 bg-slate-50">
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Name</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Joint</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Side</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">View</th>
-                  <th className="px-4 py-3 text-left font-medium text-slate-600">Direction</th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600">Tracked joints</th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Created</th>
                   <th className="px-4 py-3 text-right font-medium text-slate-600"></th>
                 </tr>
@@ -57,13 +64,8 @@ export default async function ExercisesPage() {
                         {ex.name}
                       </Link>
                     </td>
-                    <td className="px-4 py-3 capitalize text-slate-600">{ex.primary_joint}</td>
-                    <td className="px-4 py-3 capitalize text-slate-600">{ex.primary_side}</td>
                     <td className="px-4 py-3 capitalize text-slate-600">
-                      {ex.view_orientation === 'side' ? 'Side view' : 'Front view'}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {ex.direction === 'flexion_first' ? 'Flex first' : 'Extend first'}
+                      {describeTracked(ex.tracked_joints)}
                     </td>
                     <td className="px-4 py-3 text-slate-400">
                       {new Date(ex.created_at).toLocaleDateString('en-SG')}

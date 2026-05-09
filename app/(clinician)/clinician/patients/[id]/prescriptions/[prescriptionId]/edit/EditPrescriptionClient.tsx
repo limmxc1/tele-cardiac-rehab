@@ -7,32 +7,17 @@ import { updatePrescriptionAction } from '@/app/actions/prescriptions'
 interface Exercise {
   id: string
   name: string
-  primary_joint: string
-  primary_side: string
-  start_angle_min: number
-  start_angle_max: number
-  end_angle_min: number
-  end_angle_max: number
+  trackedDescription: string
 }
 
 interface Item {
   key: string
   exerciseId: string
   exerciseName: string
-  exerciseJoint: string
-  exerciseSide: string
-  defaultStartMin: number
-  defaultStartMax: number
-  defaultEndMin: number
-  defaultEndMax: number
+  exerciseTracked: string
   numSets: number
   repsPerSet: number
   restSeconds: number
-  showOverrides: boolean
-  overrideStartMin: string
-  overrideStartMax: string
-  overrideEndMin: string
-  overrideEndMax: string
 }
 
 export default function EditPrescriptionClient({
@@ -64,20 +49,10 @@ export default function EditPrescriptionClient({
         key: `${addExerciseId}-${Date.now()}`,
         exerciseId: ex.id,
         exerciseName: ex.name,
-        exerciseJoint: ex.primary_joint,
-        exerciseSide: ex.primary_side,
-        defaultStartMin: ex.start_angle_min,
-        defaultStartMax: ex.start_angle_max,
-        defaultEndMin: ex.end_angle_min,
-        defaultEndMax: ex.end_angle_max,
+        exerciseTracked: ex.trackedDescription,
         numSets: 3,
         repsPerSet: 10,
         restSeconds: 30,
-        showOverrides: false,
-        overrideStartMin: '',
-        overrideStartMax: '',
-        overrideEndMin: '',
-        overrideEndMax: '',
       },
     ])
   }
@@ -109,7 +84,6 @@ export default function EditPrescriptionClient({
     }
     setError(null)
     startTransition(async () => {
-      const toNum = (v: string) => (v === '' ? null : parseFloat(v))
       const result = await updatePrescriptionAction({
         prescriptionId: prescription.id,
         patientId,
@@ -120,14 +94,9 @@ export default function EditPrescriptionClient({
           num_sets: item.numSets,
           reps_per_set: item.repsPerSet,
           rest_seconds: item.restSeconds,
-          override_start_angle_min: item.showOverrides ? toNum(item.overrideStartMin) : null,
-          override_start_angle_max: item.showOverrides ? toNum(item.overrideStartMax) : null,
-          override_end_angle_min: item.showOverrides ? toNum(item.overrideEndMin) : null,
-          override_end_angle_max: item.showOverrides ? toNum(item.overrideEndMax) : null,
         })),
       })
       if (!result.ok) setError(result.error)
-      // on success server action redirects
     })
   }
 
@@ -151,7 +120,6 @@ export default function EditPrescriptionClient({
           </div>
         )}
 
-        {/* Date + HR */}
         <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
           <h2 className="font-semibold text-slate-800">Routine Details</h2>
           <div className="flex flex-wrap gap-6">
@@ -181,7 +149,6 @@ export default function EditPrescriptionClient({
           </div>
         </section>
 
-        {/* Exercises */}
         <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
           <h2 className="font-semibold text-slate-800">Exercises</h2>
 
@@ -194,7 +161,7 @@ export default function EditPrescriptionClient({
               >
                 {exercises.map((ex) => (
                   <option key={ex.id} value={ex.id}>
-                    {ex.name} ({ex.primary_joint}, {ex.primary_side})
+                    {ex.name} ({ex.trackedDescription})
                   </option>
                 ))}
               </select>
@@ -221,9 +188,7 @@ export default function EditPrescriptionClient({
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="font-medium text-slate-800">{item.exerciseName}</p>
-                    <p className="text-xs text-slate-400 capitalize">
-                      {item.exerciseJoint} · {item.exerciseSide}
-                    </p>
+                    <p className="text-xs text-slate-400 capitalize">{item.exerciseTracked}</p>
                   </div>
                   {!hasSessionHistory && (
                     <div className="flex items-center gap-1 shrink-0">
@@ -290,67 +255,6 @@ export default function EditPrescriptionClient({
                     />
                   </label>
                 </div>
-
-                {!hasSessionHistory && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => updateItem(item.key, 'showOverrides', !item.showOverrides)}
-                      className="text-xs text-blue-600 hover:underline"
-                    >
-                      {item.showOverrides ? '− Hide' : '+ Override'} angle thresholds for this patient
-                    </button>
-
-                    {item.showOverrides && (
-                      <div className="grid grid-cols-2 gap-3 text-sm">
-                        <div className="space-y-1">
-                          <p className="text-xs text-slate-500">
-                            Start zone (°) — default {item.defaultStartMin}–{item.defaultStartMax}
-                          </p>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              placeholder={String(item.defaultStartMin)}
-                              value={item.overrideStartMin}
-                              onChange={(e) => updateItem(item.key, 'overrideStartMin', e.target.value)}
-                              className="w-20 rounded border border-slate-300 px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
-                            <span className="text-slate-400">–</span>
-                            <input
-                              type="number"
-                              placeholder={String(item.defaultStartMax)}
-                              value={item.overrideStartMax}
-                              onChange={(e) => updateItem(item.key, 'overrideStartMax', e.target.value)}
-                              className="w-20 rounded border border-slate-300 px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-1">
-                          <p className="text-xs text-slate-500">
-                            End zone (°) — default {item.defaultEndMin}–{item.defaultEndMax}
-                          </p>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              placeholder={String(item.defaultEndMin)}
-                              value={item.overrideEndMin}
-                              onChange={(e) => updateItem(item.key, 'overrideEndMin', e.target.value)}
-                              className="w-20 rounded border border-slate-300 px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
-                            <span className="text-slate-400">–</span>
-                            <input
-                              type="number"
-                              placeholder={String(item.defaultEndMax)}
-                              value={item.overrideEndMax}
-                              onChange={(e) => updateItem(item.key, 'overrideEndMax', e.target.value)}
-                              className="w-20 rounded border border-slate-300 px-2 py-1 text-center focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
               </div>
             ))}
           </div>

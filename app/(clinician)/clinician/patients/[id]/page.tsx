@@ -9,9 +9,19 @@ type SessionRow = {
   started_at: string
   completed_at: string | null
   status: string
-  total_reps: number
+  duration_label: string
   max_hr: number | null
   exercises: string
+}
+
+function formatDuration(startedAt: string, completedAt: string | null): string {
+  if (!completedAt) return '—'
+  const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime()
+  if (ms <= 0) return '—'
+  const total = Math.round(ms / 1000)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${s.toString().padStart(2, '0')}`
 }
 
 async function loadSessionHistory(patientId: string): Promise<SessionRow[]> {
@@ -26,11 +36,10 @@ async function loadSessionHistory(patientId: string): Promise<SessionRow[]> {
 
   const sessionIds = sessions.map((s) => s.id)
 
-  // Fetch sets (for exercise names + total reps) and HR samples (for max HR) in parallel.
   const [{ data: setRows }, { data: hrRows }] = await Promise.all([
     supabaseServer
       .from('session_sets')
-      .select('session_id, reps_completed, exercises ( name )')
+      .select('session_id, exercises ( name )')
       .in('session_id', sessionIds),
     supabaseServer
       .from('session_hr_samples')
@@ -40,14 +49,11 @@ async function loadSessionHistory(patientId: string): Promise<SessionRow[]> {
 
   type SetRow = {
     session_id: string
-    reps_completed: number
     exercises: { name: string } | { name: string }[] | null
   }
 
-  const repsBySession = new Map<string, number>()
   const exercisesBySession = new Map<string, Set<string>>()
   for (const r of (setRows ?? []) as SetRow[]) {
-    repsBySession.set(r.session_id, (repsBySession.get(r.session_id) ?? 0) + (r.reps_completed ?? 0))
     const ex = Array.isArray(r.exercises) ? r.exercises[0] : r.exercises
     if (ex?.name) {
       const set = exercisesBySession.get(r.session_id) ?? new Set<string>()
@@ -67,7 +73,7 @@ async function loadSessionHistory(patientId: string): Promise<SessionRow[]> {
     started_at: s.started_at,
     completed_at: s.completed_at,
     status: s.status,
-    total_reps: repsBySession.get(s.id) ?? 0,
+    duration_label: formatDuration(s.started_at, s.completed_at),
     max_hr: maxHrBySession.get(s.id) ?? null,
     exercises: Array.from(exercisesBySession.get(s.id) ?? []).join(', ') || '—',
   }))
@@ -165,7 +171,7 @@ export default async function PatientDetailPage({
                   <tr>
                     <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-600">Exercises</th>
-                    <th className="px-4 py-3 text-right font-medium text-slate-600">Reps</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-600">Duration</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-600">Max HR</th>
                     <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
                     <th className="px-4 py-3 text-right font-medium text-slate-600"></th>
@@ -184,7 +190,7 @@ export default async function PatientDetailPage({
                         })}
                       </td>
                       <td className="px-4 py-3 text-slate-600">{s.exercises}</td>
-                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">{s.total_reps}</td>
+                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">{s.duration_label}</td>
                       <td className="px-4 py-3 text-right text-slate-700 tabular-nums">
                         {s.max_hr ?? '—'}
                       </td>

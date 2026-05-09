@@ -1,10 +1,12 @@
 import { supabaseServer } from '@/lib/supabase/server'
+import type { TrackedJointSpec } from '@/app/actions/exercises'
+
+export type SparseLandmarks = Record<number, [number, number, number]>
 
 export type PlaybackPose = {
   // ms relative to session start
   tMs: number
-  // 33 landmarks × [x, y, z] (normalized)
-  lm: [number, number, number][]
+  lm: SparseLandmarks
 }
 
 export type PlaybackHR = {
@@ -12,43 +14,15 @@ export type PlaybackHR = {
   bpm: number
 }
 
-export type PlaybackRep = {
-  id: string
-  setNumber: number
-  exerciseName: string
-  repNumber: number
-  startedTMs: number
-  completedTMs: number
-  peakAngleDegrees: number | null
-  romAchievedDegrees: number | null
-  hrBpmAtPeak: number | null
-}
-
-export type PlaybackPause = {
-  id: string
-  pausedTMs: number
-  resumedTMs: number | null
-  reason: string
-}
-
 export type PlaybackSet = {
   id: string
   setNumber: number
   exerciseName: string
   exerciseId: string
+  trackedJoints: TrackedJointSpec[]
   startedTMs: number
   completedTMs: number | null
-  repsCompleted: number
-  repsTarget: number
   endedReason: string | null
-  primaryJoint: string
-  primarySide: 'left' | 'right' | 'both'
-  secondaryJoint: string | null
-  secondarySide: 'left' | 'right' | 'both' | null
-  startAngleMin: number
-  startAngleMax: number
-  endAngleMin: number
-  endAngleMax: number
 }
 
 export type PlaybackBundle = {
@@ -64,12 +38,19 @@ export type PlaybackBundle = {
   clinicianNotes: string | null
   poses: PlaybackPose[]
   hr: PlaybackHR[]
-  reps: PlaybackRep[]
-  pauses: PlaybackPause[]
   sets: PlaybackSet[]
+  /** Union of every tracked joint across the session's sets — drives the playback charts. */
+  trackedJoints: TrackedJointSpec[]
 }
 
-type PackedFrame = { ts_ms: number; lm: [number, number, number][] }
+type PackedFrameLegacy = { ts_ms: number; lm: [number, number, number][] }
+type PackedFrameSparse = { ts_ms: number; lm: SparseLandmarks }
+
+function isSparseLm(lm: unknown): lm is SparseLandmarks {
+  if (!lm || typeof lm !== 'object') return false
+  if (Array.isArray(lm)) return false
+  return true
+}
 
 export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBundle | null> {
   const { data: session } = await supabaseServer
@@ -85,26 +66,15 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
   const startedAtMs = new Date(session.started_at).getTime()
   const completedAtMs = session.completed_at ? new Date(session.completed_at).getTime() : null
 
-  const [setsRes, repsRes, pausesRes, hrRes, poseRes] = await Promise.all([
+  const [setsRes, hrRes, poseRes] = await Promise.all([
     supabaseServer
       .from('session_sets')
       .select(
-        'id, set_number, exercise_id, started_at, completed_at, reps_completed, reps_target, ended_reason, ' +
-        'exercises:exercise_id ( name, primary_joint, primary_side, secondary_joint, ' +
-        'start_angle_min, start_angle_max, end_angle_min, end_angle_max )',
+        'id, set_number, exercise_id, started_at, completed_at, ended_reason, ' +
+        'exercises:exercise_id ( name, tracked_joints )',
       )
       .eq('session_id', sessionId)
       .order('set_number', { ascending: true }),
-    supabaseServer
-      .from('session_reps')
-      .select('id, session_set_id, rep_number, started_at, completed_at, peak_angle_degrees, rom_achieved_degrees, hr_bpm_at_peak')
-      .order('rep_number', { ascending: true })
-      .limit(2000), // generous cap; one session won't realistically exceed
-    supabaseServer
-      .from('session_pauses')
-      .select('id, paused_at, resumed_at, reason')
-      .eq('session_id', sessionId)
-      .order('paused_at', { ascending: true }),
     supabaseServer
       .from('session_hr_samples')
       .select('timestamp_ms, hr_bpm')
@@ -117,27 +87,24 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
       .order('second_offset', { ascending: true }),
   ])
 
-  type ExerciseJoin = {
-    name: string
-    primary_joint: string
-    primary_side: string
-    secondary_joint: string | null
-    start_angle_min: number
-    start_angle_max: number
-    end_angle_min: number
-    end_angle_max: number
-  }
+  type ExerciseJoin = { name: string; tracked_joints: unknown }
   type SetRow = {
     id: string
     set_number: number
     exercise_id: string
     started_at: string
     completed_at: string | null
-    reps_completed: number
-    reps_target: number
     ended_reason: string | null
     exercises: ExerciseJoin | ExerciseJoin[] | null
   }
+
+  function parseTracked(raw: unknown): TrackedJointSpec[] {
+    if (!Array.isArray(raw)) return []
+    return (raw as TrackedJointSpec[]).filter(
+      (t) => t && typeof t.joint === 'string' && (t.side === 'left' || t.side === 'right'),
+    )
+  }
+
   const sets: PlaybackSet[] = ((setsRes.data ?? []) as unknown as SetRow[]).map((s) => {
     const ex = Array.isArray(s.exercises) ? s.exercises[0] : s.exercises
     return {
@@ -145,71 +112,63 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
       setNumber: s.set_number,
       exerciseName: ex?.name ?? 'Exercise',
       exerciseId: s.exercise_id,
+      trackedJoints: parseTracked(ex?.tracked_joints),
       startedTMs: new Date(s.started_at).getTime() - startedAtMs,
       completedTMs: s.completed_at ? new Date(s.completed_at).getTime() - startedAtMs : null,
-      repsCompleted: s.reps_completed,
-      repsTarget: s.reps_target,
       endedReason: s.ended_reason,
-      primaryJoint: ex?.primary_joint ?? 'knee',
-      primarySide: (ex?.primary_side ?? 'both') as 'left' | 'right' | 'both',
-      secondaryJoint: ex?.secondary_joint ?? null,
-      // We don't store a separate side for the secondary joint; reuse primary side.
-      secondarySide: ex?.secondary_joint ? ((ex?.primary_side ?? 'both') as 'left' | 'right' | 'both') : null,
-      startAngleMin: Number(ex?.start_angle_min ?? 0),
-      startAngleMax: Number(ex?.start_angle_max ?? 0),
-      endAngleMin: Number(ex?.end_angle_min ?? 0),
-      endAngleMax: Number(ex?.end_angle_max ?? 0),
     }
   })
-
-  // Filter reps to ones whose set belongs to this session.
-  const setIdMap = new Map(sets.map((s) => [s.id, s]))
-  const reps: PlaybackRep[] = (repsRes.data ?? [])
-    .filter((r) => setIdMap.has(r.session_set_id))
-    .map((r) => {
-      const set = setIdMap.get(r.session_set_id)!
-      return {
-        id: r.id,
-        setNumber: set.setNumber,
-        exerciseName: set.exerciseName,
-        repNumber: r.rep_number,
-        startedTMs: new Date(r.started_at).getTime() - startedAtMs,
-        completedTMs: new Date(r.completed_at).getTime() - startedAtMs,
-        peakAngleDegrees: r.peak_angle_degrees,
-        romAchievedDegrees: r.rom_achieved_degrees,
-        hrBpmAtPeak: r.hr_bpm_at_peak,
-      }
-    })
-    .sort((a, b) => a.startedTMs - b.startedTMs)
-
-  const pauses: PlaybackPause[] = (pausesRes.data ?? []).map((p) => ({
-    id: p.id,
-    pausedTMs: new Date(p.paused_at).getTime() - startedAtMs,
-    resumedTMs: p.resumed_at ? new Date(p.resumed_at).getTime() - startedAtMs : null,
-    reason: p.reason,
-  }))
 
   const hr: PlaybackHR[] = (hrRes.data ?? []).map((h) => ({
     tMs: Number(h.timestamp_ms) - startedAtMs,
     bpm: h.hr_bpm,
   }))
 
-  // Flatten pose frames; inner ts_ms is epoch ms (per Phase 7.1 alignment).
+  // Pose frames: support both new sparse and legacy dense formats so old
+  // sessions still play back.
   const poses: PlaybackPose[] = []
   for (const row of poseRes.data ?? []) {
-    const arr = row.frames as unknown as PackedFrame[] | null
+    const arr = row.frames as unknown as (PackedFrameSparse | PackedFrameLegacy)[] | null
     if (!Array.isArray(arr)) continue
     for (const f of arr) {
-      poses.push({ tMs: f.ts_ms - startedAtMs, lm: f.lm })
+      let lm: SparseLandmarks
+      if (Array.isArray(f.lm)) {
+        lm = {}
+        for (let i = 0; i < f.lm.length; i++) {
+          const p = f.lm[i]
+          if (Array.isArray(p) && p.length >= 3) {
+            lm[i] = [p[0], p[1], p[2]]
+          }
+        }
+      } else if (isSparseLm(f.lm)) {
+        lm = {}
+        for (const [k, v] of Object.entries(f.lm as SparseLandmarks)) {
+          const idx = Number(k)
+          if (Number.isFinite(idx) && Array.isArray(v) && v.length >= 3) {
+            lm[idx] = [v[0], v[1], v[2]]
+          }
+        }
+      } else {
+        continue
+      }
+      poses.push({ tMs: f.ts_ms - startedAtMs, lm })
     }
   }
   poses.sort((a, b) => a.tMs - b.tMs)
 
-  // Duration: prefer completed_at; otherwise fall back to last sample we have.
+  // Union of tracked joints (deduped by side+joint).
+  const trackedSet = new Map<string, TrackedJointSpec>()
+  for (const s of sets) {
+    for (const t of s.trackedJoints) {
+      trackedSet.set(`${t.side}_${t.joint}`, t)
+    }
+  }
+  const trackedJoints = Array.from(trackedSet.values())
+
   const lastPoseT = poses.length > 0 ? poses[poses.length - 1].tMs : 0
   const lastHrT = hr.length > 0 ? hr[hr.length - 1].tMs : 0
-  const lastRepT = reps.length > 0 ? reps[reps.length - 1].completedTMs : 0
-  const fallbackEnd = Math.max(lastPoseT, lastHrT, lastRepT)
+  const lastSetT = sets.reduce((m, s) => Math.max(m, s.completedTMs ?? s.startedTMs), 0)
+  const fallbackEnd = Math.max(lastPoseT, lastHrT, lastSetT)
   const durationMs = completedAtMs !== null
     ? Math.max(completedAtMs - startedAtMs, fallbackEnd)
     : fallbackEnd
@@ -235,8 +194,7 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
     clinicianNotes: session.clinician_notes,
     poses,
     hr,
-    reps,
-    pauses,
     sets,
+    trackedJoints,
   }
 }

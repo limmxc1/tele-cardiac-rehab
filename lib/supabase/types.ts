@@ -19,9 +19,9 @@ export type Database = {
           archived_at: string | null
           created_at: string
           created_by: string | null
-          direction: string
-          end_angle_max: number
-          end_angle_min: number
+          direction: string | null
+          end_angle_max: number | null
+          end_angle_min: number | null
           id: string
           instructions_text: string | null
           name: string
@@ -33,17 +33,18 @@ export type Database = {
           secondary_joint: string | null
           secondary_start_max: number | null
           secondary_start_min: number | null
-          start_angle_max: number
-          start_angle_min: number
+          start_angle_max: number | null
+          start_angle_min: number | null
+          tracked_joints: Json
           view_orientation: string
         }
         Insert: {
           archived_at?: string | null
           created_at?: string
           created_by?: string | null
-          direction: string
-          end_angle_max: number
-          end_angle_min: number
+          direction?: string | null
+          end_angle_max?: number | null
+          end_angle_min?: number | null
           id?: string
           instructions_text?: string | null
           name: string
@@ -55,17 +56,18 @@ export type Database = {
           secondary_joint?: string | null
           secondary_start_max?: number | null
           secondary_start_min?: number | null
-          start_angle_max: number
-          start_angle_min: number
+          start_angle_max?: number | null
+          start_angle_min?: number | null
+          tracked_joints?: Json
           view_orientation?: string
         }
         Update: {
           archived_at?: string | null
           created_at?: string
           created_by?: string | null
-          direction?: string
-          end_angle_max?: number
-          end_angle_min?: number
+          direction?: string | null
+          end_angle_max?: number | null
+          end_angle_min?: number | null
           id?: string
           instructions_text?: string | null
           name?: string
@@ -77,8 +79,9 @@ export type Database = {
           secondary_joint?: string | null
           secondary_start_max?: number | null
           secondary_start_min?: number | null
-          start_angle_max?: number
-          start_angle_min?: number
+          start_angle_max?: number | null
+          start_angle_min?: number | null
+          tracked_joints?: Json
           view_orientation?: string
         }
         Relationships: [
@@ -326,7 +329,7 @@ export type Database = {
           id: string
           prescription_item_id: string
           reps_completed: number
-          reps_target: number
+          reps_target: number | null
           session_id: string
           set_number: number
           started_at: string
@@ -338,7 +341,7 @@ export type Database = {
           id?: string
           prescription_item_id: string
           reps_completed?: number
-          reps_target: number
+          reps_target?: number | null
           session_id: string
           set_number: number
           started_at: string
@@ -350,7 +353,7 @@ export type Database = {
           id?: string
           prescription_item_id?: string
           reps_completed?: number
-          reps_target?: number
+          reps_target?: number | null
           session_id?: string
           set_number?: number
           started_at?: string

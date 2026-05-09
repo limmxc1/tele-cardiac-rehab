@@ -1,6 +1,16 @@
 import { notFound } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase/server'
 import EditPrescriptionClient from './EditPrescriptionClient'
+import type { TrackedJointSpec } from '@/app/actions/exercises'
+
+function describeTracked(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return '—'
+  const list = (raw as TrackedJointSpec[]).filter(
+    (t) => t && typeof t.joint === 'string' && typeof t.side === 'string',
+  )
+  if (list.length === 0) return '—'
+  return list.map((t) => `${t.side} ${t.joint}`).join(', ')
+}
 
 export default async function EditPrescriptionPage({
   params,
@@ -11,7 +21,7 @@ export default async function EditPrescriptionPage({
 
   const [
     { data: prescription },
-    { data: itemRows, error: itemsError },
+    { data: itemRows },
     { data: exercises },
     { count: sessionCount },
   ] = await Promise.all([
@@ -23,12 +33,12 @@ export default async function EditPrescriptionPage({
       .single(),
     supabaseServer
       .from('prescription_items')
-      .select('*, exercises(*)')
+      .select('id, exercise_id, num_sets, reps_per_set, rest_seconds, exercises(name, tracked_joints)')
       .eq('prescription_id', prescriptionId)
       .order('sequence_order'),
     supabaseServer
       .from('exercises')
-      .select('id, name, primary_joint, primary_side, start_angle_min, start_angle_max, end_angle_min, end_angle_max')
+      .select('id, name, tracked_joints')
       .is('archived_at', null)
       .order('name'),
     supabaseServer
@@ -44,36 +54,22 @@ export default async function EditPrescriptionPage({
       patientId={patientId}
       prescription={prescription}
       initialItems={(itemRows ?? []).map((r) => {
-        const ex = r.exercises as {
-          name: string
-          primary_joint: string
-          primary_side: string
-          start_angle_min: number
-          start_angle_max: number
-          end_angle_min: number
-          end_angle_max: number
-        } | null
+        const ex = r.exercises as { name: string; tracked_joints: unknown } | null
         return {
           key: r.id,
           exerciseId: r.exercise_id,
           exerciseName: ex?.name ?? 'Unknown',
-          exerciseJoint: ex?.primary_joint ?? '',
-          exerciseSide: ex?.primary_side ?? '',
-          defaultStartMin: ex?.start_angle_min ?? 0,
-          defaultStartMax: ex?.start_angle_max ?? 180,
-          defaultEndMin: ex?.end_angle_min ?? 0,
-          defaultEndMax: ex?.end_angle_max ?? 180,
+          exerciseTracked: describeTracked(ex?.tracked_joints),
           numSets: r.num_sets,
           repsPerSet: r.reps_per_set,
           restSeconds: r.rest_seconds,
-          showOverrides: r.override_start_angle_min !== null,
-          overrideStartMin: r.override_start_angle_min !== null ? String(r.override_start_angle_min) : '',
-          overrideStartMax: r.override_start_angle_max !== null ? String(r.override_start_angle_max) : '',
-          overrideEndMin: r.override_end_angle_min !== null ? String(r.override_end_angle_min) : '',
-          overrideEndMax: r.override_end_angle_max !== null ? String(r.override_end_angle_max) : '',
         }
       })}
-      exercises={exercises ?? []}
+      exercises={(exercises ?? []).map((ex) => ({
+        id: ex.id,
+        name: ex.name,
+        trackedDescription: describeTracked(ex.tracked_joints),
+      }))}
       hasSessionHistory={(sessionCount ?? 0) > 0}
     />
   )

@@ -10,7 +10,7 @@ import type { Database, Json } from '@/lib/supabase/types'
 
 const HR_BATCH = 500
 const POSE_BATCH = 200
-const REPS_BATCH = 200
+const SET_BATCH = 200
 
 export type UploadResult =
   | { ok: true; sessionId: string }
@@ -38,9 +38,6 @@ async function uploadOnce(sessionId: string): Promise<void> {
   const session = bundle.session
   if (!session) throw new Error(`Session ${sessionId} not found in buffer`)
 
-  // Every step uses upsert so a partial-success retry converges instead of
-  // duplicate-PK-throwing on rows the previous attempt already wrote.
-
   // 1. sessions (parent of everything).
   {
     const { error } = await supabase
@@ -59,7 +56,8 @@ async function uploadOnce(sessionId: string): Promise<void> {
     if (error) throw new Error(`sessions: ${error.message}`)
   }
 
-  // 2. session_sets — parent of session_reps.
+  // 2. session_sets — one row per recording. reps_target is unused (nullable
+  // on the column now); reps_completed left at default 0.
   if (bundle.sets.length > 0) {
     const setRows = bundle.sets.map((s) => ({
       id: s.setId,
@@ -69,42 +67,12 @@ async function uploadOnce(sessionId: string): Promise<void> {
       set_number: s.setNumber,
       started_at: s.startedAtIso,
       completed_at: s.completedAtIso,
-      reps_completed: s.repsCompleted,
-      reps_target: s.repsTarget,
       ended_reason: s.endedReason,
     }))
-    await batchUpsert('session_sets', setRows, REPS_BATCH, 'id')
+    await batchUpsert('session_sets', setRows, SET_BATCH, 'id')
   }
 
-  // 3. session_reps — id is now client-minted so retries are idempotent.
-  if (bundle.reps.length > 0) {
-    const repRows = bundle.reps.map((r) => ({
-      id: r.repId,
-      session_set_id: r.sessionSetId,
-      rep_number: r.repNumber,
-      started_at: r.startedAtIso,
-      completed_at: r.completedAtIso,
-      peak_angle_degrees: r.peakAngleDegrees,
-      rom_achieved_degrees: r.romAchievedDegrees,
-      hr_bpm_at_peak: r.hrBpmAtPeak,
-    }))
-    await batchUpsert('session_reps', repRows, REPS_BATCH, 'id')
-  }
-
-  // 4. session_pauses.
-  if (bundle.pauses.length > 0) {
-    const pauseRows = bundle.pauses.map((p) => ({
-      id: p.pauseId,
-      session_id: p.sessionId,
-      paused_at: p.pausedAtIso,
-      resumed_at: p.resumedAtIso,
-      reason: p.reason,
-    }))
-    await batchUpsert('session_pauses', pauseRows, REPS_BATCH, 'id')
-  }
-
-  // 5. session_hr_samples — PK is (session_id, timestamp_ms). Dedupe across
-  // the entire bundle (not just per-batch) before sending.
+  // 3. session_hr_samples.
   if (bundle.hrSamples.length > 0) {
     const seen = new Set<number>()
     const hrRows: Database['public']['Tables']['session_hr_samples']['Insert'][] = []
@@ -120,8 +88,7 @@ async function uploadOnce(sessionId: string): Promise<void> {
     await batchUpsert('session_hr_samples', hrRows, HR_BATCH, 'session_id,timestamp_ms')
   }
 
-  // 6. session_pose_frames — PK is (session_id, second_offset). Sort for
-  // friendlier dashboard inspection.
+  // 4. session_pose_frames — sparse landmark map per frame.
   if (bundle.poseFrames.length > 0) {
     const sorted = [...bundle.poseFrames].sort((a, b) => a.secondOffset - b.secondOffset)
     const frameRows = sorted.map((f) => ({
@@ -132,7 +99,7 @@ async function uploadOnce(sessionId: string): Promise<void> {
     await batchUpsert('session_pose_frames', frameRows, POSE_BATCH, 'session_id,second_offset')
   }
 
-  // 7. Mark prescription completed only on a clean completion. Idempotent update.
+  // 5. Mark prescription completed only on a clean completion.
   if (session.status === 'completed') {
     const { error } = await supabase
       .from('prescriptions')
@@ -145,8 +112,6 @@ async function uploadOnce(sessionId: string): Promise<void> {
   await clearSession(session.sessionId)
 }
 
-// Per-session mutex so two callers (e.g., post-completion path + calendar
-// flusher mounted in another tab) don't race on the same session.
 const inflight = new Map<string, Promise<UploadResult>>()
 
 export async function uploadSession(

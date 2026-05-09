@@ -18,9 +18,7 @@ export default async function PrescribePage({
       .single(),
     supabaseServer
       .from('exercises')
-      .select(
-        'id, name, primary_joint, primary_side, start_angle_min, start_angle_max, end_angle_min, end_angle_max'
-      )
+      .select('id, name, tracked_joints')
       .is('archived_at', null)
       .order('name'),
   ])

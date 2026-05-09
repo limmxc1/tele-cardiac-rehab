@@ -41,3 +41,19 @@ export const JOINT_TRIPLETS: Record<string, Record<'left' | 'right', [number, nu
     right: [LM.RIGHT_KNEE,    LM.RIGHT_ANKLE,   LM.RIGHT_FOOT_INDEX],
   },
 }
+
+export interface TrackedJointLike {
+  joint: string
+  side: 'left' | 'right'
+}
+
+/** Union of every landmark index needed to score the given tracked joints. */
+export function trackedLandmarkIndices(tracked: readonly TrackedJointLike[]): number[] {
+  const set = new Set<number>()
+  for (const t of tracked) {
+    const triplet = JOINT_TRIPLETS[t.joint]?.[t.side]
+    if (!triplet) continue
+    for (const i of triplet) set.add(i)
+  }
+  return Array.from(set).sort((a, b) => a - b)
+}

@@ -1,16 +1,9 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import type { PlaybackPose } from '@/lib/playback/loader'
-
-const POSE_CONNECTIONS: [number, number][] = [
-  [11, 12],
-  [11, 13], [13, 15],
-  [12, 14], [14, 16],
-  [11, 23], [12, 24], [23, 24],
-  [23, 25], [25, 27], [27, 29], [27, 31],
-  [24, 26], [26, 28], [28, 30], [28, 32],
-]
+import { JOINT_TRIPLETS } from '@/lib/pose/landmarks'
+import type { TrackedJointSpec } from '@/app/actions/exercises'
+import type { PlaybackPose, SparseLandmarks } from '@/lib/playback/loader'
 
 function findFrameIndex(poses: PlaybackPose[], tMs: number): number {
   if (poses.length === 0) return -1
@@ -31,37 +24,73 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 /**
- * Resolve the interpolated landmark frame at `currentTMs`. Same math as the
- * canvas drawing path so on-screen pose and computed angles stay in sync.
+ * Resolve the interpolated sparse landmark map at `currentTMs`. Only landmarks
+ * present in BOTH frames get lerped; landmarks present in only one frame are
+ * carried through unchanged. Indices missing from both frames stay missing.
  */
 export function resolveFrame(
   poses: PlaybackPose[],
   currentTMs: number,
-): [number, number, number][] | null {
+): SparseLandmarks | null {
   if (poses.length === 0) return null
   const i = findFrameIndex(poses, currentTMs)
   const a = poses[i]
   const b = poses[Math.min(i + 1, poses.length - 1)]
   const span = b.tMs - a.tMs
   const t = span > 0 ? Math.min(1, Math.max(0, (currentTMs - a.tMs) / span)) : 0
-  return a.lm.map((p, idx) => {
-    const q = b.lm[idx] ?? p
-    return [lerp(p[0], q[0], t), lerp(p[1], q[1], t), lerp(p[2], q[2], t)]
-  })
+  const out: SparseLandmarks = {}
+  const indices = new Set<number>([
+    ...Object.keys(a.lm).map(Number),
+    ...Object.keys(b.lm).map(Number),
+  ])
+  for (const idx of indices) {
+    const p = a.lm[idx]
+    const q = b.lm[idx]
+    if (p && q) {
+      out[idx] = [lerp(p[0], q[0], t), lerp(p[1], q[1], t), lerp(p[2], q[2], t)]
+    } else if (p) {
+      out[idx] = p
+    } else if (q) {
+      out[idx] = q
+    }
+  }
+  return out
+}
+
+/**
+ * Build the segment list to draw given the tracked joints — each joint's
+ * triplet contributes two segments (proximal-joint and joint-distal). Deduped
+ * across joints so shared bones (e.g. shoulder for both elbow and shoulder
+ * tracking) don't draw twice.
+ */
+function trackedSegments(tracked: readonly TrackedJointSpec[]): [number, number][] {
+  const seen = new Set<string>()
+  const out: [number, number][] = []
+  for (const t of tracked) {
+    const triplet = JOINT_TRIPLETS[t.joint]?.[t.side]
+    if (!triplet) continue
+    const pairs: [number, number][] = [
+      [triplet[0], triplet[1]],
+      [triplet[1], triplet[2]],
+    ]
+    for (const [a, b] of pairs) {
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push([a, b])
+    }
+  }
+  return out
 }
 
 interface Props {
   poses: PlaybackPose[]
+  trackedJoints: readonly TrackedJointSpec[]
   currentTMs: number
   className?: string
 }
 
-/**
- * Stickman replay. Anatomical view — landmarks are drawn as-is, so the
- * patient's right hand appears on the viewer's left (matches a clinician
- * standing in front of the patient).
- */
-export default function StickmanCanvas({ poses, currentTMs, className }: Props) {
+export default function StickmanCanvas({ poses, trackedJoints, currentTMs, className }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -110,25 +139,31 @@ export default function StickmanCanvas({ poses, currentTMs, className }: Props) 
 
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-    ctx.strokeStyle = '#22c55e'
-    ctx.lineWidth = 3 * dpr
-    for (const [pa, pb] of POSE_CONNECTIONS) {
-      const A = lm[pa]
-      const B = lm[pb]
-      if (!A || !B) continue
-      ctx.beginPath()
-      ctx.moveTo(px(A[0]), py(A[1]))
-      ctx.lineTo(px(B[0]), py(B[1]))
-      ctx.stroke()
+
+    const segments = trackedSegments(trackedJoints)
+    if (segments.length > 0) {
+      ctx.strokeStyle = '#22c55e'
+      ctx.lineWidth = 3 * dpr
+      for (const [a, b] of segments) {
+        const A = lm[a]
+        const B = lm[b]
+        if (!A || !B) continue
+        ctx.beginPath()
+        ctx.moveTo(px(A[0]), py(A[1]))
+        ctx.lineTo(px(B[0]), py(B[1]))
+        ctx.stroke()
+      }
     }
 
     ctx.fillStyle = '#86efac'
-    for (const p of lm) {
+    for (const idx of Object.keys(lm)) {
+      const p = lm[Number(idx)]
+      if (!p) continue
       ctx.beginPath()
       ctx.arc(px(p[0]), py(p[1]), 3.5 * dpr, 0, Math.PI * 2)
       ctx.fill()
     }
-  }, [poses, currentTMs])
+  }, [poses, trackedJoints, currentTMs])
 
   return (
     <canvas

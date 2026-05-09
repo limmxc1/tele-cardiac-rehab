@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react'
 import StickmanCanvas from './StickmanCanvas'
 import SyncedScrubber from './SyncedScrubber'
-import RepTable from './RepTable'
 import NotesEditor from './NotesEditor'
 import MetricsTimeline from './MetricsTimeline'
 import type { PlaybackBundle } from '@/lib/playback/loader'
@@ -59,19 +58,10 @@ export default function PlaybackClient({ bundle }: Props) {
     setCurrentTMs(Math.max(0, Math.min(bundle.durationMs, tMs)))
   }
 
-  const liveCounts = (() => {
-    let repsDone = 0
-    let activeExercise: string | null = null
-    let activeSet: number | null = null
-    for (const r of bundle.reps) {
-      if (r.startedTMs <= currentTMs) {
-        repsDone++
-        activeExercise = r.exerciseName
-        activeSet = r.setNumber
-      } else break
-    }
-    return { repsDone, activeExercise, activeSet }
-  })()
+  const exerciseLabel =
+    bundle.sets.length === 0
+      ? null
+      : bundle.sets.map((s) => `${s.exerciseName} · Set ${s.setNumber}`).join(' / ')
 
   return (
     <div className="space-y-4">
@@ -80,7 +70,6 @@ export default function PlaybackClient({ bundle }: Props) {
         durationMs={bundle.durationMs}
         isPlaying={isPlaying}
         speed={speed}
-        pauses={bundle.pauses}
         onSeek={seek}
         onTogglePlay={togglePlay}
         onSpeedChange={setSpeed}
@@ -93,22 +82,20 @@ export default function PlaybackClient({ bundle }: Props) {
             <span className="text-slate-500">Anatomical view</span>
           </div>
           <div className="aspect-[4/3] w-full">
-            <StickmanCanvas poses={bundle.poses} currentTMs={currentTMs} />
+            <StickmanCanvas
+              poses={bundle.poses}
+              trackedJoints={bundle.trackedJoints}
+              currentTMs={currentTMs}
+            />
           </div>
           <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2 text-sm text-slate-200">
-            <div>
-              {liveCounts.activeExercise ? (
-                <>
-                  <span className="font-medium">{liveCounts.activeExercise}</span>
-                  <span className="text-slate-400"> · Set {liveCounts.activeSet}</span>
-                </>
-              ) : (
-                <span className="text-slate-400">Awaiting reps…</span>
-              )}
+            <div className="truncate">
+              {exerciseLabel ?? <span className="text-slate-400">Recording</span>}
             </div>
-            <div className="tabular-nums">
-              Reps: <span className="font-semibold">{liveCounts.repsDone}</span>
-              <span className="text-slate-500"> / {bundle.reps.length}</span>
+            <div className="text-xs text-slate-400 capitalize">
+              {bundle.trackedJoints.length === 0
+                ? 'no joints tracked'
+                : bundle.trackedJoints.map((t) => `${t.side} ${t.joint}`).join(', ')}
             </div>
           </div>
         </div>
@@ -125,13 +112,6 @@ export default function PlaybackClient({ bundle }: Props) {
         patientId={bundle.patientId}
         initial={bundle.clinicianNotes ?? ''}
       />
-
-      <section>
-        <h2 className="mb-2 text-sm font-semibold text-slate-500 uppercase tracking-wide">
-          Per-rep detail
-        </h2>
-        <RepTable reps={bundle.reps} currentTMs={currentTMs} onSeek={seek} />
-      </section>
     </div>
   )
 }
