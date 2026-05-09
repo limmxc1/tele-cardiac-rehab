@@ -1,8 +1,9 @@
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { RepDetector, type RepConfig, type RepEvent } from './repDetector'
 import { TPoseDetector } from './tposeDetector'
+import { OPoseDetector } from './oposeDetector'
 import {
-  countdownCue, repCue, restCue, nextExerciseCue,
+  startReadyCue, repCue, restCue, nextExerciseCue,
   pauseCue, resumeReadyCue, sessionCompleteCue,
   type PauseReason,
 } from '../audio/cues'
@@ -11,10 +12,10 @@ export type { PauseReason, RepEvent }
 
 /** Visibility threshold (0..1) for a landmark to count as "in frame". */
 const VISIBILITY_THRESHOLD = 0.5
-/** Continuous time the body must be fully in frame before READY → ACTIVE. */
-const IN_FRAME_REQUIRED_MS = 2000
+/** Sustained partial-body visibility that triggers an out_of_frame pause during ACTIVE. */
+const PARTIAL_BODY_PAUSE_MS = 2_000
 
-function isFullyInFrame(landmarks: NormalizedLandmark[]): boolean {
+export function isFullyInFrame(landmarks: NormalizedLandmark[]): boolean {
   if (landmarks.length < 33) return false
   for (const lm of landmarks) {
     const v = lm.visibility
@@ -68,10 +69,13 @@ export interface SessionSnapshot {
   tposeProgress: number
   restSecondsLeft: number
   hrBpm: number | null
+  /** Legacy — always 0 now that the start gesture replaces the countdown. Kept so older callers don't break. */
   countdownSecondsLeft: number
   completedReps: RepEvent[]
-  /** 0..1 — how close the patient is to having a full body in frame, used during READY. */
-  inFrameProgress: number
+  /** True while in READY iff the latest pose has all 33 landmarks visible. UI uses this to coach the user. */
+  fullyInFrame: boolean
+  /** 0..1 — O-pose hold progress during READY (start-of-set gesture). */
+  oPoseProgress: number
 }
 
 export class SessionStateMachine {
@@ -82,11 +86,11 @@ export class SessionStateMachine {
   private pauseReason: PauseReason | null = null
   private tposeProgress = 0
   private restSecondsLeft = 0
-  private countdownEndMs = 0
   private destroyed = false
 
   private repDetector: RepDetector | null = null
   private tposeDetector: TPoseDetector
+  private oposeDetector: OPoseDetector
 
   private latestHr: number | null = null
   private hrBreachStart: number | null = null
@@ -96,10 +100,12 @@ export class SessionStateMachine {
   private personCount = 1
   private outOfFrameStart: number | null = null
   private multiPersonStart: number | null = null
+  /** Sustained partial-body visibility timer during ACTIVE. */
+  private partialBodyStart: number | null = null
 
-  // READY → ACTIVE gating: countdown must finish AND a full body must be visible
-  // for at least IN_FRAME_REQUIRED_MS continuously before the set begins.
-  private inFrameSinceMs: number | null = null
+  // READY view state — surfaced in snapshots so the UI can coach the patient.
+  private fullyInFrame = false
+  private oPoseProgress = 0
 
   private restInterval: ReturnType<typeof setInterval> | null = null
 
@@ -112,6 +118,7 @@ export class SessionStateMachine {
   ) {
     this.setIdx = startSetIdx
     this.tposeDetector = new TPoseDetector(() => this.onTPoseDetected())
+    this.oposeDetector = new OPoseDetector(() => this.onOPoseDetected())
   }
 
   private get cur(): SetEntry { return this.sets[this.setIdx] }
@@ -123,20 +130,38 @@ export class SessionStateMachine {
   }
 
   feedPose(landmarks: NormalizedLandmark[], timestamp_ms: number): void {
+    const fully = isFullyInFrame(landmarks)
+    this.fullyInFrame = fully
+
     if (this.phase === 'ACTIVE') {
-      this.repDetector?.feed(landmarks, this.latestHr, timestamp_ms)
-      this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
+      // Gate rep detection on a fully-visible body so partial frames don't
+      // confuse the angle/state machine. Also pause the session if the body
+      // stays partial for too long — clinician needs clean data only.
+      if (fully) {
+        this.partialBodyStart = null
+        this.repDetector?.feed(landmarks, this.latestHr, timestamp_ms)
+        this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
+      } else {
+        if (this.partialBodyStart === null) this.partialBodyStart = timestamp_ms
+        else if (timestamp_ms - this.partialBodyStart >= PARTIAL_BODY_PAUSE_MS) {
+          this.enterPaused('out_of_frame')
+        }
+      }
     } else if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach') {
       this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
+    } else if (this.phase === 'PAUSED' && this.pauseReason === 'out_of_frame') {
+      // Auto-resume once the body is fully visible again (single person already
+      // implied by feedPose — multi-person resume is handled in setPersonCount).
+      if (fully && this.personCount === 1) this.resumeFromPause()
     } else if (this.phase === 'READY') {
-      // Track sustained full-body visibility; gate the ACTIVE transition on it.
-      if (isFullyInFrame(landmarks)) {
-        if (this.inFrameSinceMs === null) this.inFrameSinceMs = timestamp_ms
+      // Start gesture: only count O-pose progress when the body is fully visible
+      // (so we don't latch on partial poses). Reset on any partial frame.
+      if (fully && this.personCount === 1) {
+        this.oPoseProgress = this.oposeDetector.feed(landmarks, timestamp_ms)
       } else {
-        this.inFrameSinceMs = null
+        this.oposeDetector.reset()
+        this.oPoseProgress = 0
       }
-      this.maybeEnterActive()
-      return
     }
     this.emit()
   }
@@ -232,29 +257,14 @@ export class SessionStateMachine {
     this.completedReps = []
     this.tposeProgress = 0
     this.tposeDetector.reset()
-    this.countdownEndMs = performance.now() + 3000
-    this.inFrameSinceMs = null
-    countdownCue()
-    // Ready→Active gating happens in feedPose so the in-frame check can also
-    // hold the transition. Keep a backup timer to fire emit() when the
-    // countdown crosses zero, even if no pose has arrived yet.
-    setTimeout(() => {
-      if (this.destroyed || this.phase !== 'READY') return
-      this.maybeEnterActive()
-    }, 3000)
+    this.oposeDetector.reset()
+    this.oPoseProgress = 0
+    this.partialBodyStart = null
+    startReadyCue()
   }
 
-  private maybeEnterActive(): void {
+  private onOPoseDetected(): void {
     if (this.phase !== 'READY') return
-    const now = performance.now()
-    if (now < this.countdownEndMs) {
-      this.emit()
-      return
-    }
-    if (this.inFrameSinceMs === null || now - this.inFrameSinceMs < IN_FRAME_REQUIRED_MS) {
-      this.emit()
-      return
-    }
     this.enterActive()
     this.emit()
   }
@@ -265,6 +275,9 @@ export class SessionStateMachine {
     this.hrBreachStart = null
     this.outOfFrameStart = null
     this.multiPersonStart = null
+    this.partialBodyStart = null
+    this.oPoseProgress = 0
+    this.oposeDetector.reset()
     this.repDetector = new RepDetector(this.cur.repConfig, (ev) => this.onRepComplete(ev))
     this.tposeDetector.reset()
     // Only fire onSetStart when transitioning from READY (not from PAUSED → ACTIVE).
@@ -379,15 +392,6 @@ export class SessionStateMachine {
 
   private emit(): void {
     if (this.destroyed) return
-    const now = performance.now()
-    const countdownSecondsLeft =
-      this.phase === 'READY'
-        ? Math.max(0, Math.ceil((this.countdownEndMs - now) / 1000))
-        : 0
-    const inFrameProgress =
-      this.phase === 'READY' && this.inFrameSinceMs !== null
-        ? Math.min(1, (now - this.inFrameSinceMs) / IN_FRAME_REQUIRED_MS)
-        : 0
     this.onChange({
       phase: this.phase,
       set: this.cur,
@@ -396,9 +400,10 @@ export class SessionStateMachine {
       tposeProgress: this.tposeProgress,
       restSecondsLeft: this.restSecondsLeft,
       hrBpm: this.latestHr,
-      countdownSecondsLeft,
+      countdownSecondsLeft: 0,
       completedReps: this.completedReps,
-      inFrameProgress,
+      fullyInFrame: this.fullyInFrame,
+      oPoseProgress: this.oPoseProgress,
     })
   }
 }

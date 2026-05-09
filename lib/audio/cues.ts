@@ -16,7 +16,9 @@ function speak(text: string): void {
   window.speechSynthesis.speak(utt)
 }
 
-export function countdownCue(): void { speak('three, two, one, begin') }
+export function startReadyCue(): void {
+  speak('Make a circle above your head with both hands to start')
+}
 
 export function repCue(): void {
   if (isMuted() || typeof window === 'undefined') return
@@ -47,7 +49,7 @@ export function pauseCue(reason: PauseReason): void {
   const msgs: Record<PauseReason, string> = {
     hr_breach: 'Heart rate too high. Please rest.',
     h10_disconnect: 'Heart rate monitor disconnected.',
-    out_of_frame: 'Please step back into the camera frame.',
+    out_of_frame: 'Body not fully visible. Please step into the camera frame.',
     multiple_people: 'Please exercise alone.',
   }
   speak(msgs[reason])

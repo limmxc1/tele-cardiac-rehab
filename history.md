@@ -262,3 +262,30 @@ The `HRTimeline` already drew a Recharts line, but the cursor's HR value wasn't 
 DB columns (`secondary_joint`, `secondary_start_min/max`, `secondary_end_min/max`) were already in `0002_exercises.sql` but unused by the form. Added an "Enable" toggle in `NewExerciseClient` that reveals a joint dropdown (side reuses the primary side per `lib/pose/repDetector.ts` semantics) and four threshold sliders for start/end zones. The demo overlay's HUD now shows both angles side-by-side when secondary is enabled, so the clinician can verify both joints reach their target zones before saving. `ExercisePayload` and `createExerciseAction` extended with the five nullable secondary fields; null = "primary only" (existing behavior).
 
 **Key files:** `lib/buffer/sessionBuffer.ts`, `lib/playback/loader.ts`, `components/playback/StickmanCanvas.tsx`, `components/playback/HRTimeline.tsx`, `components/playback/JointAngleReadout.tsx`, `components/playback/PlaybackClient.tsx`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `app/actions/exercises.ts`
+
+---
+
+## Patch — O-pose start gesture, partial-body pause, recording gate
+
+Three connected changes that ensure only clean data lands in storage and the patient explicitly signals readiness before each set:
+
+### 1. O-pose start gesture (replaces the 3-second auto-countdown)
+- New `lib/pose/oposeDetector.ts`: detects "arms above head, hands meeting" — both wrists ≥5% above shoulders, at/above the nose, and within 12% normalized distance of each other. 1.5s sustained hold fires `onDetected()`.
+- `SessionStateMachine` instantiates an `OPoseDetector` alongside the T-pose one. READY→ACTIVE is now gated on the O-pose firing (no auto-start). The countdown timer + `IN_FRAME_REQUIRED_MS` + `inFrameSinceMs` field have all been removed.
+- `enterReady()` no longer schedules a `setTimeout`. It just resets state and speaks the new `startReadyCue` ("Make a circle above your head with both hands to start"), replacing the old "three, two, one, begin" countdown.
+- The state machine snapshot exposes `oPoseProgress` (0..1) for the UI ring and `fullyInFrame` so the overlay can suppress the gesture coaching until the body is in frame. `countdownSecondsLeft` is kept (always 0) for back-compat with any older consumer.
+
+### 2. Partial-body pause during ACTIVE
+- `feedPose()` checks `isFullyInFrame(landmarks)` (helper exported now) on every frame. If a frame is partial (any of the 33 landmarks below the 0.5 visibility threshold), `partialBodyStart` begins; after 2 sustained seconds the session auto-pauses with `pauseReason: 'out_of_frame'`. Auto-resumes when the body becomes fully visible again with exactly one person in frame.
+- Multi-person pause path (`setPersonCount` ≥ 2) was already in place from Phase 7.4.
+- Pause overlay copy updated: `out_of_frame` now reads "Body Not Fully Visible — Recording paused — step into the frame so all of you is visible" so it covers both "you walked off-camera" and "your knees are below the bottom edge".
+- The audio cue line for `out_of_frame` was updated to match.
+
+### 3. Recording gate — no partial frames written
+- `handlePose` in `SessionRunClient` only calls `recordPoseFrame` when phase is ACTIVE **and** `poses.length === 1` **and** `isFullyInFrame(first)`. The state machine already pauses on these conditions but the 2-second debounce window could leak partial frames; this defense-in-depth check guarantees the buffer / Supabase only sees fully-visible single-person frames. (HR samples are unaffected — H10 data is independent of camera state.)
+
+### 4. UI overlay
+- READY overlay rewritten: card now reads "Make an 'O' above your head to start" with sub-instruction, plus a blue progress ring (`OPoseRing`) that fills as the gesture is held. If the body isn't fully visible yet, the ring is replaced by an amber "Step fully into the frame" hint so the patient fixes their framing first.
+- IDLE start-screen hint updated to mention the O-pose gesture in addition to the T-pose end-of-set gesture.
+
+**Key files:** `lib/pose/oposeDetector.ts` (new), `lib/pose/sessionStateMachine.ts`, `lib/audio/cues.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`

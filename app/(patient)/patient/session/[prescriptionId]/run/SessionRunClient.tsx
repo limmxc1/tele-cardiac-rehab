@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { PolarH10, type H10Status } from '@/lib/hr/polarH10'
 import {
   SessionStateMachine,
+  isFullyInFrame,
   type SetEntry,
   type SessionSnapshot,
   type SessionEvents,
@@ -98,7 +99,8 @@ export default function SessionRunClient({
     hrBpm: null,
     countdownSecondsLeft: 0,
     completedReps: [],
-    inFrameProgress: 0,
+    fullyInFrame: false,
+    oPoseProgress: 0,
   }))
   const [h10Status, setH10Status] = useState<H10Status>('idle')
   const [h10Error, setH10Error] = useState<string | null>(null)
@@ -228,8 +230,16 @@ export default function SessionRunClient({
     if (first) {
       sm.feedPose(first, timestamp_ms)
       const sessionId = sessionIdRef.current
-      // Only record while ACTIVE — wasted bytes during overlays/idle add up fast.
-      if (sessionId && smRef.current && snapPhaseRef.current === 'ACTIVE') {
+      // Recording gate: ACTIVE phase + full 33-landmark visibility + exactly
+      // one person in frame. The state machine itself pauses on partial body
+      // / multi-person, but defending in the recorder means we never write a
+      // partial frame even within the 2s pause-debounce window.
+      if (
+        sessionId &&
+        snapPhaseRef.current === 'ACTIVE' &&
+        poses.length === 1 &&
+        isFullyInFrame(first)
+      ) {
         const wallMs = toWall(timestamp_ms)
         void recordPoseFrame(sessionId, wallMs, first, sessionStartedAtWallRef.current)
       }
@@ -522,31 +532,34 @@ export default function SessionRunClient({
           >
             Start
           </button>
-          <p className="text-slate-500 text-xs">T-pose during a set to end it early</p>
+          <p className="text-slate-500 text-xs">
+            After tapping Start, make an &ldquo;O&rdquo; above your head to begin · T-pose to end a set early
+          </p>
         </div>
       )}
 
       {phase === 'READY' && (
         <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
-          <div className="bg-black/75 rounded-3xl px-14 py-8 text-center">
-            <p className="text-slate-300 text-sm uppercase tracking-widest">Get Ready</p>
-            <p className="text-white text-8xl font-bold mt-1 tabular-nums">
-              {snap.countdownSecondsLeft || 1}
+          <div className="bg-black/80 rounded-3xl px-10 py-6 text-center max-w-md">
+            <p className="text-slate-300 text-xs uppercase tracking-widest">Get Ready</p>
+            <p className="text-white text-2xl font-bold mt-1">
+              Make an &ldquo;O&rdquo; above your head to start
             </p>
-            {/* Coaching message + in-frame progress bar; visible once countdown
-                hits zero but the body isn't yet sustained in view. */}
-            {snap.countdownSecondsLeft === 0 && snap.inFrameProgress < 1 && (
-              <>
-                <p className="mt-4 text-amber-300 text-base font-medium">
-                  Step fully into the frame
-                </p>
-                <div className="mx-auto mt-2 h-1.5 w-40 overflow-hidden rounded-full bg-slate-700">
-                  <div
-                    className="h-full rounded-full bg-amber-300 transition-all"
-                    style={{ width: `${Math.round(snap.inFrameProgress * 100)}%` }}
-                  />
-                </div>
-              </>
+            <p className="text-slate-400 text-sm mt-1">
+              Raise both arms and touch hands above your head.
+            </p>
+
+            {/* Body-visibility coaching takes precedence — no point trying the
+                gesture if the camera can't see all of you. */}
+            {!snap.fullyInFrame ? (
+              <p className="mt-4 text-amber-300 text-base font-medium">
+                Step fully into the frame
+              </p>
+            ) : (
+              <div className="mt-5 flex flex-col items-center gap-2">
+                <OPoseRing progress={snap.oPoseProgress} />
+                <p className="text-slate-400 text-xs">Hold for 1.5s</p>
+              </div>
             )}
           </div>
         </div>
@@ -635,7 +648,7 @@ function PauseOverlay({
   const info: Record<string, { title: string; subtitle: string }> = {
     hr_breach:       { title: 'Heart Rate Too High',  subtitle: 'Rest — show T-pose when ready' },
     h10_disconnect:  { title: 'H10 Disconnected',     subtitle: 'Reconnecting automatically…' },
-    out_of_frame:    { title: 'Out of Frame',          subtitle: 'Step back into camera view' },
+    out_of_frame:    { title: 'Body Not Fully Visible', subtitle: 'Recording paused — step into the frame so all of you is visible' },
     multiple_people: { title: 'Multiple People',       subtitle: 'Please exercise alone' },
   }
   const { title, subtitle } = (reason ? info[reason] : undefined) ?? { title: 'Paused', subtitle: '' }
@@ -653,6 +666,24 @@ function PauseOverlay({
         <TPoseRing progress={tposeProgress} />
       )}
     </>
+  )
+}
+
+function OPoseRing({ progress }: { progress: number }) {
+  const size = 96
+  const r = size / 2 - 8
+  const circ = 2 * Math.PI * r
+  return (
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1e293b" strokeWidth={8} />
+      <circle
+        cx={size / 2} cy={size / 2} r={r}
+        fill="none" stroke="#3b82f6" strokeWidth={8}
+        strokeDasharray={circ}
+        strokeDashoffset={circ * (1 - progress)}
+        strokeLinecap="round"
+      />
+    </svg>
   )
 }
 
