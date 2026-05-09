@@ -25,7 +25,7 @@ export type SessionPhase = 'IDLE' | 'READY' | 'RECORDING' | 'COMPLETE'
 /** A "joint of interest" the clinician asked to track on this exercise. */
 export interface TrackedJoint {
   joint: 'knee' | 'hip' | 'shoulder' | 'elbow' | 'ankle'
-  side: 'left' | 'right'
+  side: 'left' | 'right' | 'both'
 }
 
 export interface ExerciseEntry {

@@ -13,7 +13,13 @@ import {
 } from '@/app/actions/exercises'
 
 const JOINTS: Joint[] = ['knee', 'hip', 'shoulder', 'elbow', 'ankle']
-const SIDES: Side[] = ['left', 'right']
+const SIDES: Side[] = ['left', 'right', 'both']
+
+const SIDE_HINT: Record<Side, string> = {
+  left: 'Left side only.',
+  right: 'Right side only.',
+  both: 'Records both sides; angle is averaged for playback.',
+}
 
 export interface InitialValues {
   name: string
@@ -52,11 +58,18 @@ export default function NewExerciseClient({
 
   function toggle(spec: TrackedJointSpec): void {
     const key = jointKey(spec)
-    if (trackedKeys.has(key)) {
-      setTracked((cur) => cur.filter((t) => jointKey(t) !== key))
-    } else {
-      setTracked((cur) => [...cur, spec])
-    }
+    setTracked((cur) => {
+      if (cur.some((t) => jointKey(t) === key)) {
+        return cur.filter((t) => jointKey(t) !== key)
+      }
+      // Adding 'both' for a joint replaces any per-side rows for the same joint
+      // (and vice versa). This keeps the trace unambiguous: one row per joint.
+      const withoutClashes =
+        spec.side === 'both'
+          ? cur.filter((t) => !(t.joint === spec.joint && (t.side === 'left' || t.side === 'right')))
+          : cur.filter((t) => !(t.joint === spec.joint && t.side === 'both'))
+      return [...withoutClashes, spec]
+    })
   }
 
   async function handleSave() {
@@ -201,7 +214,11 @@ export default function NewExerciseClient({
                 <tr>
                   <th className="px-4 py-2 text-left font-medium">Joint</th>
                   {SIDES.map((side) => (
-                    <th key={side} className="px-4 py-2 text-center font-medium capitalize">
+                    <th
+                      key={side}
+                      className="px-4 py-2 text-center font-medium capitalize"
+                      title={SIDE_HINT[side]}
+                    >
                       {side}
                     </th>
                   ))}
@@ -230,6 +247,11 @@ export default function NewExerciseClient({
               </tbody>
             </table>
           </div>
+          <p className="text-[11px] text-slate-400">
+            Pick <em>Both</em> for symmetric movements (e.g. squats) — angles from each side are
+            averaged into one playback trace. Pick <em>Left</em> + <em>Right</em> separately if
+            you want side-by-side traces (e.g. to spot asymmetry).
+          </p>
 
           {tracked.length > 0 && (
             <div className="flex flex-wrap gap-1.5">

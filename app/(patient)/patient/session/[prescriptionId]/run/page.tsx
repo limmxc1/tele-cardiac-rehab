@@ -53,7 +53,9 @@ export default async function SessionRunPage({
 
   const trackedJoints: TrackedJoint[] = Array.isArray(ex.tracked_joints)
     ? (ex.tracked_joints as TrackedJoint[]).filter(
-        (t) => t && typeof t.joint === 'string' && (t.side === 'left' || t.side === 'right'),
+        (t) =>
+          t && typeof t.joint === 'string' &&
+          (t.side === 'left' || t.side === 'right' || t.side === 'both'),
       )
     : []
 

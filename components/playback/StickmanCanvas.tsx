@@ -67,17 +67,23 @@ function trackedSegments(tracked: readonly TrackedJointSpec[]): [number, number]
   const seen = new Set<string>()
   const out: [number, number][] = []
   for (const t of tracked) {
-    const triplet = JOINT_TRIPLETS[t.joint]?.[t.side]
-    if (!triplet) continue
-    const pairs: [number, number][] = [
-      [triplet[0], triplet[1]],
-      [triplet[1], triplet[2]],
-    ]
-    for (const [a, b] of pairs) {
-      const key = a < b ? `${a}_${b}` : `${b}_${a}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push([a, b])
+    const trips = JOINT_TRIPLETS[t.joint]
+    if (!trips) continue
+    const sides: ('left' | 'right')[] =
+      t.side === 'both' ? ['left', 'right'] : [t.side]
+    for (const s of sides) {
+      const triplet = trips[s]
+      if (!triplet) continue
+      const pairs: [number, number][] = [
+        [triplet[0], triplet[1]],
+        [triplet[1], triplet[2]],
+      ]
+      for (const [a, b] of pairs) {
+        const key = a < b ? `${a}_${b}` : `${b}_${a}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push([a, b])
+      }
     }
   }
   return out

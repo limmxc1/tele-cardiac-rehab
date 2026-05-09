@@ -44,16 +44,26 @@ export const JOINT_TRIPLETS: Record<string, Record<'left' | 'right', [number, nu
 
 export interface TrackedJointLike {
   joint: string
-  side: 'left' | 'right'
+  side: 'left' | 'right' | 'both'
+}
+
+/** Sides covered by a tracked-joint spec — `both` expands to `[left, right]`. */
+export function expandSides(side: 'left' | 'right' | 'both'): ('left' | 'right')[] {
+  return side === 'both' ? ['left', 'right'] : [side]
 }
 
 /** Union of every landmark index needed to score the given tracked joints. */
 export function trackedLandmarkIndices(tracked: readonly TrackedJointLike[]): number[] {
   const set = new Set<number>()
   for (const t of tracked) {
-    const triplet = JOINT_TRIPLETS[t.joint]?.[t.side]
-    if (!triplet) continue
-    for (const i of triplet) set.add(i)
+    const sides = expandSides(t.side)
+    const trips = JOINT_TRIPLETS[t.joint]
+    if (!trips) continue
+    for (const s of sides) {
+      const triplet = trips[s]
+      if (!triplet) continue
+      for (const i of triplet) set.add(i)
+    }
   }
   return Array.from(set).sort((a, b) => a - b)
 }

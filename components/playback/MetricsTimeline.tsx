@@ -50,8 +50,22 @@ function buildAngleSeries(
   poses: PlaybackPose[],
   joint: TrackedJointSpec,
 ): AnglePoint[] {
-  const triplet = JOINT_TRIPLETS[joint.joint]?.[joint.side]
-  if (!triplet) return []
+  const trips = JOINT_TRIPLETS[joint.joint]
+  if (!trips) return []
+  if (joint.side === 'both') {
+    // Average the two sides; if only one side is visible, use that one. The
+    // recorder writes both triplets when 'both' is configured, so most frames
+    // will have both available.
+    return poses.map((p) => {
+      const l = angleFromTriplet(p.lm, trips.left)
+      const r = angleFromTriplet(p.lm, trips.right)
+      let angle: number | null
+      if (l !== null && r !== null) angle = (l + r) / 2
+      else angle = l ?? r
+      return { t: p.tMs, angle }
+    })
+  }
+  const triplet = trips[joint.side]
   return poses.map((p) => ({ t: p.tMs, angle: angleFromTriplet(p.lm, triplet) }))
 }
 

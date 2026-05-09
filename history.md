@@ -532,3 +532,16 @@ Major architecture pivot at user request. The session runtime no longer counts r
 - Calendar + per-set todo cards. Each card now opens a single recording (one O-pose-to-T-pose pass).
 
 **Key files:** `db/migrations/0008_tracked_joints.sql` (new), `lib/pose/sessionStateMachine.ts`, `lib/pose/landmarks.ts`, `lib/audio/cues.ts`, `lib/buffer/sessionBuffer.ts`, `lib/sync/uploader.ts`, `lib/playback/loader.ts`, `app/actions/exercises.ts`, `app/actions/prescriptions.ts`, `app/(clinician)/clinician/exercises/**`, `app/(clinician)/clinician/prescribe/[patientId]/PrescribeClient.tsx`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/prescriptions/[prescriptionId]/edit/**`, `app/(patient)/patient/session/[prescriptionId]/run/**`, `components/playback/{StickmanCanvas,MetricsTimeline,SyncedScrubber,PlaybackClient}.tsx`
+
+---
+
+## Patch — `both` side option for tracked joints
+
+Clinicians can now mark a joint as **Both** instead of picking left/right separately. When `both` is set:
+
+- The recorder packs the triplet landmarks for **both** sides into each pose frame (`expandSides` in `landmarks.ts` deduplicates the union).
+- The playback chart computes one trace per joint by averaging the two sides' angles per frame; if only one side is visible on a given frame, that single value is used.
+- The stickman draws **both** sides' bones for that joint, so symmetric movements like squats render correctly.
+- Form rule: ticking `Both` replaces any per-side rows for the same joint (and vice versa) — keeps the configuration unambiguous. Pick `Left` + `Right` separately if you want side-by-side traces (asymmetry analysis); pick `Both` for symmetric movements where one trace is enough.
+
+**Key files:** `app/actions/exercises.ts`, `lib/pose/landmarks.ts`, `lib/pose/sessionStateMachine.ts`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `lib/playback/loader.ts`, `app/(patient)/patient/session/[prescriptionId]/run/page.tsx`, `components/playback/StickmanCanvas.tsx`, `components/playback/MetricsTimeline.tsx`

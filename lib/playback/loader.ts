@@ -101,7 +101,9 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
   function parseTracked(raw: unknown): TrackedJointSpec[] {
     if (!Array.isArray(raw)) return []
     return (raw as TrackedJointSpec[]).filter(
-      (t) => t && typeof t.joint === 'string' && (t.side === 'left' || t.side === 'right'),
+      (t) =>
+        t && typeof t.joint === 'string' &&
+        (t.side === 'left' || t.side === 'right' || t.side === 'both'),
     )
   }
 

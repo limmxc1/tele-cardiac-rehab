@@ -6,10 +6,14 @@ import { supabaseServer } from '@/lib/supabase/server'
 import type { Json } from '@/lib/supabase/types'
 
 export type Joint = 'knee' | 'hip' | 'shoulder' | 'elbow' | 'ankle'
-export type Side = 'left' | 'right'
+export type Side = 'left' | 'right' | 'both'
 
 export interface TrackedJointSpec {
   joint: Joint
+  /**
+   * 'left' / 'right' track a single side. 'both' records the triplet on each
+   * side and averages the angle on playback (single trace per joint).
+   */
   side: Side
 }
 
