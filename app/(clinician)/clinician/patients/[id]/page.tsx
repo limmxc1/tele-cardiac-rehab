@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase/server'
 import DeleteSessionButton from './DeleteSessionButton'
-import DeletePrescriptionButton from './DeletePrescriptionButton'
+import PrescriptionHistoryTable from './PrescriptionHistoryTable'
 
 type SessionRow = {
   id: string
@@ -138,43 +138,7 @@ export default async function PatientDetailPage({
               <p className="mt-1 text-sm">Prescribe a routine to get started.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-              <table className="w-full text-sm">
-                <thead className="border-b border-slate-200 bg-slate-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">HR Limit</th>
-                    <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
-                    <th className="px-4 py-3 text-right font-medium text-slate-600"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {prescriptions.map((p) => (
-                    <tr key={p.id} className="border-b border-slate-100 last:border-0">
-                      <td className="px-4 py-3 text-slate-800">
-                        {new Date(p.scheduled_date + 'T00:00:00').toLocaleDateString('en-SG', {
-                          weekday: 'short',
-                          day: 'numeric',
-                          month: 'short',
-                          year: 'numeric',
-                        })}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{p.hr_upper_limit_bpm} bpm</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColor[p.status] ?? 'bg-slate-100 text-slate-600'}`}
-                        >
-                          {p.status.replace('_', ' ')}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <DeletePrescriptionButton prescriptionId={p.id} patientId={id} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <PrescriptionHistoryTable prescriptions={prescriptions} patientId={id} />
           )}
         </section>
 

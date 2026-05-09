@@ -178,3 +178,33 @@ export async function deletePrescriptionAction(args: {
   revalidatePath(`/clinician/patients/${args.patientId}`)
   return { ok: true }
 }
+
+export async function bulkDeletePrescriptionsAction(args: {
+  prescriptionIds: string[]
+  patientId: string
+}): Promise<{ ok: true; deleted: number } | { ok: false; error: string }> {
+  if (args.prescriptionIds.length === 0) return { ok: true, deleted: 0 }
+
+  // Check none of the prescriptions have session history.
+  const { count: sessionCount, error: sessErr } = await supabaseServer
+    .from('sessions')
+    .select('*', { count: 'exact', head: true })
+    .in('prescription_id', args.prescriptionIds)
+  if (sessErr) return { ok: false, error: sessErr.message }
+  if ((sessionCount ?? 0) > 0) {
+    return {
+      ok: false,
+      error: `Cannot delete: ${sessionCount} of the selected routine(s) already have session history. Delete those sessions first.`,
+    }
+  }
+
+  const { error } = await supabaseServer
+    .from('prescriptions')
+    .delete()
+    .in('id', args.prescriptionIds)
+    .eq('patient_id', args.patientId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath(`/clinician/patients/${args.patientId}`)
+  return { ok: true, deleted: args.prescriptionIds.length }
+}
