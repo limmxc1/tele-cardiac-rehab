@@ -103,6 +103,8 @@ export default function SessionRunClient({
     oPoseProgress: 0,
     orientationProgress: 0,
     orientationOk: false,
+    primaryAngleDegrees: null,
+    secondaryAngleDegrees: null,
   }))
   const [confirmingEnd, setConfirmingEnd] = useState(false)
   const [h10Status, setH10Status] = useState<H10Status>('idle')
@@ -436,6 +438,34 @@ export default function SessionRunClient({
             <HRRing hrBpm={snap.hrBpm} hrLimit={hrLimit} size={140} />
           </div>
 
+          {/* Joint angles — live readouts vs. target zones during ACTIVE/PAUSED. */}
+          {(phase === 'ACTIVE' || phase === 'PAUSED') && (
+            <div className="rounded-xl bg-slate-900 px-4 py-3 flex flex-col gap-2.5">
+              <JointAngleMeter
+                label={`${capitalize(snap.set.repConfig.primaryJoint)}${snap.set.repConfig.primarySide === 'both' ? '' : ` (${snap.set.repConfig.primarySide})`}`}
+                current={snap.primaryAngleDegrees}
+                startMin={snap.set.repConfig.startAngleMin}
+                startMax={snap.set.repConfig.startAngleMax}
+                endMin={snap.set.repConfig.endAngleMin}
+                endMax={snap.set.repConfig.endAngleMax}
+              />
+              {snap.set.repConfig.secondaryJoint &&
+                snap.set.repConfig.secondaryStartMin !== undefined &&
+                snap.set.repConfig.secondaryStartMax !== undefined &&
+                snap.set.repConfig.secondaryEndMin !== undefined &&
+                snap.set.repConfig.secondaryEndMax !== undefined && (
+                  <JointAngleMeter
+                    label={`${capitalize(snap.set.repConfig.secondaryJoint)}${snap.set.repConfig.primarySide === 'both' ? '' : ` (${snap.set.repConfig.primarySide})`}`}
+                    current={snap.secondaryAngleDegrees}
+                    startMin={snap.set.repConfig.secondaryStartMin}
+                    startMax={snap.set.repConfig.secondaryStartMax}
+                    endMin={snap.set.repConfig.secondaryEndMin}
+                    endMax={snap.set.repConfig.secondaryEndMax}
+                  />
+                )}
+            </div>
+          )}
+
           {/* Live stickman figure (clean canvas, no camera background) */}
           <div className="flex-1 rounded-xl overflow-hidden bg-slate-900 min-h-0 relative">
             <LiveStickman landmarksRef={latestLmRef} />
@@ -750,6 +780,88 @@ function OPoseRing({ progress }: { progress: number }) {
         strokeLinecap="round"
       />
     </svg>
+  )
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1)
+}
+
+/**
+ * Horizontal range bar showing the start zone (blue) and end zone (green) for
+ * a joint, with a marker at the live angle. Falls back to a "—" readout when
+ * the joint is briefly occluded.
+ */
+function JointAngleMeter({
+  label,
+  current,
+  startMin,
+  startMax,
+  endMin,
+  endMax,
+}: {
+  label: string
+  current: number | null
+  startMin: number
+  startMax: number
+  endMin: number
+  endMax: number
+}) {
+  // Bar spans the union of both zones with a small pad so the marker has room
+  // to travel even when the patient overshoots a target.
+  const lo = Math.min(startMin, endMin)
+  const hi = Math.max(startMax, endMax)
+  const pad = Math.max(10, (hi - lo) * 0.15)
+  const min = Math.max(0, Math.floor(lo - pad))
+  const max = Math.min(180, Math.ceil(hi + pad))
+  const span = Math.max(1, max - min)
+
+  const pct = (v: number) => `${((Math.max(min, Math.min(max, v)) - min) / span) * 100}%`
+  const inStart = current !== null && current >= startMin && current <= startMax
+  const inEnd = current !== null && current >= endMin && current <= endMax
+  const valueColor = inEnd
+    ? 'text-emerald-400'
+    : inStart
+      ? 'text-sky-400'
+      : current === null
+        ? 'text-slate-500'
+        : 'text-amber-300'
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <p className="text-slate-300 text-xs font-medium">{label}</p>
+        <p className={`text-2xl font-bold tabular-nums leading-none ${valueColor}`}>
+          {current === null ? '—' : Math.round(current)}
+          <span className="text-sm text-slate-400 font-normal ml-0.5">°</span>
+        </p>
+      </div>
+      <div className="relative mt-1.5 h-2.5 rounded-full bg-slate-800 overflow-hidden">
+        {/* Start zone */}
+        <div
+          className="absolute top-0 bottom-0 bg-sky-500/55"
+          style={{ left: pct(startMin), width: `calc(${pct(startMax)} - ${pct(startMin)})` }}
+        />
+        {/* End zone (target) */}
+        <div
+          className="absolute top-0 bottom-0 bg-emerald-500/65"
+          style={{ left: pct(endMin), width: `calc(${pct(endMax)} - ${pct(endMin)})` }}
+        />
+        {/* Live marker */}
+        {current !== null && (
+          <div
+            className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-4 rounded-sm bg-white shadow-[0_0_4px_rgba(255,255,255,0.9)]"
+            style={{ left: pct(current) }}
+          />
+        )}
+      </div>
+      <div className="mt-1 flex justify-between text-[10px] text-slate-500 tabular-nums">
+        <span>{min}°</span>
+        <span className="text-sky-400">start {startMin}-{startMax}°</span>
+        <span className="text-emerald-400">target {endMin}-{endMax}°</span>
+        <span>{max}°</span>
+      </div>
+    </div>
   )
 }
 

@@ -452,3 +452,15 @@ Secondary joint angles are now also recorded and auto-tuned the same way as prim
 **Caveat:** exercises created *before* this patch with `secondary_joint` enabled but unsuited thresholds (e.g. defaults left at 80–100 / 150–180) will now actually enforce those zones. Re-tune via the edit-exercise flow if patients stop registering reps on those.
 
 **Key files:** `lib/pose/repDetector.ts`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`
+
+---
+
+## Patch — Live joint-angle HUD in patient session
+
+Patients now see real-time angle feedback during a working set so they can self-correct without the clinician guessing what zone they're in.
+
+- `SessionStateMachine.feedPose()` computes the primary and (if configured) secondary joint angles every frame via `getJointAngle()` and emits them on `SessionSnapshot` as `primaryAngleDegrees` / `secondaryAngleDegrees` (null when occluded).
+- `SessionRunClient.tsx` renders a new `JointAngleMeter` panel between the HR ring and the live stickman, visible during `ACTIVE` and `PAUSED`. Each meter shows the joint label, the live angle in big tabular numerals, and a horizontal bar with the start zone (sky) and end/target zone (emerald) overlaid. A white tick marks the patient's current angle, and the value text turns sky/emerald when it lands in either zone, amber otherwise.
+- The bar's range is `min(startMin,endMin)` to `max(startMax,endMax)` plus a 15% pad clamped to `[0,180]` — overshoots stay visible.
+
+**Key files:** `lib/pose/sessionStateMachine.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`

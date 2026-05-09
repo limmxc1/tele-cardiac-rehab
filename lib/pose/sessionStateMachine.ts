@@ -4,6 +4,7 @@ import { TPoseDetector } from './tposeDetector'
 import { OPoseDetector } from './oposeDetector'
 import { OrientationGate, type ViewOrientation } from './orientationDetector'
 import { JOINT_TRIPLETS } from './landmarks'
+import { getJointAngle } from './angles'
 import {
   startReadyCue, repCue, restCue, nextExerciseCue,
   pauseCue, resumeReadyCue, sessionCompleteCue,
@@ -132,6 +133,10 @@ export interface SessionSnapshot {
   orientationProgress: number
   /** True once orientationProgress has reached 1 — UI uses this to swap from coaching to start gesture. */
   orientationOk: boolean
+  /** Live primary-joint angle in degrees, or null when joint not visible. Surfaced for the in-session HUD. */
+  primaryAngleDegrees: number | null
+  /** Live secondary-joint angle in degrees (or null if no secondary configured / not visible). */
+  secondaryAngleDegrees: number | null
 }
 
 export class SessionStateMachine {
@@ -166,6 +171,10 @@ export class SessionStateMachine {
   private orientationProgress = 0
   private orientationOk = false
 
+  // Live joint-angle readout for the patient HUD.
+  private primaryAngleDegrees: number | null = null
+  private secondaryAngleDegrees: number | null = null
+
   private restInterval: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -196,6 +205,14 @@ export class SessionStateMachine {
     // long as the joint(s) being scored are visible. (A deep squat that hides
     // the face shouldn't block knee-angle detection.)
     const jointVisible = isRepJointVisible(landmarks, this.cur.repConfig)
+
+    // Live angle readout for the in-session HUD. Computed every frame so the
+    // patient sees their angle even while paused (out-of-frame coaching, etc).
+    const cfg = this.cur.repConfig
+    this.primaryAngleDegrees = getJointAngle(landmarks, cfg.primaryJoint, cfg.primarySide)
+    this.secondaryAngleDegrees = cfg.secondaryJoint
+      ? getJointAngle(landmarks, cfg.secondaryJoint, cfg.primarySide)
+      : null
 
     if (this.phase === 'ACTIVE') {
       if (jointVisible) {
@@ -518,6 +535,8 @@ export class SessionStateMachine {
       oPoseProgress: this.oPoseProgress,
       orientationProgress: this.orientationProgress,
       orientationOk: this.orientationOk,
+      primaryAngleDegrees: this.primaryAngleDegrees,
+      secondaryAngleDegrees: this.secondaryAngleDegrees,
     })
   }
 }
