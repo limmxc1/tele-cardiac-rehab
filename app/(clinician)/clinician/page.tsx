@@ -25,10 +25,13 @@ export default function ClinicianDashboardPage() {
             <p className="font-semibold text-slate-800">Exercise Library</p>
             <p className="mt-1 text-sm text-slate-400">Create and manage exercises with demo-mode thresholds</p>
           </Link>
-          <div className="rounded-xl border border-slate-200 bg-white p-5 opacity-40">
+          <Link
+            href="/clinician/patients"
+            className="rounded-xl border border-slate-200 bg-white p-5 hover:border-blue-300 hover:shadow-sm"
+          >
             <p className="font-semibold text-slate-800">Patients</p>
-            <p className="mt-1 text-sm text-slate-400">Phase 3 — prescriptions coming soon</p>
-          </div>
+            <p className="mt-1 text-sm text-slate-400">View patients and prescribe routines</p>
+          </Link>
         </nav>
       </main>
     </div>
