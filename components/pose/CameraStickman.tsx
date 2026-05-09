@@ -58,10 +58,11 @@ function drawStickman(
 interface Props {
   onPersonCount?: (count: number) => void
   onWorkerStatus?: (status: 'loading' | 'ready' | 'error') => void
+  onPose?: (poses: NormalizedLandmark[][], timestamp_ms: number) => void
   className?: string
 }
 
-export default function CameraStickman({ onPersonCount, onWorkerStatus, className }: Props) {
+export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, className }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
@@ -117,6 +118,7 @@ export default function CameraStickman({ onPersonCount, onWorkerStatus, classNam
       } else if (msg.type === 'RESULT') {
         workerBusyRef.current = false
         onPersonCount?.(msg.poses.length)
+        onPose?.(msg.poses, msg.timestamp_ms)
         if (overlayRef.current) drawStickman(overlayRef.current, msg.poses)
       } else if (msg.type === 'ERROR') {
         onWorkerStatus?.('error')
@@ -152,7 +154,7 @@ export default function CameraStickman({ onPersonCount, onWorkerStatus, classNam
       workerReadyRef.current = false
       workerBusyRef.current = false
     }
-  }, [sendFrame, onPersonCount, onWorkerStatus])
+  }, [sendFrame, onPersonCount, onWorkerStatus, onPose])
 
   return (
     <div className={`relative bg-black overflow-hidden ${className ?? ''}`}>
