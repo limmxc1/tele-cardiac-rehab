@@ -218,3 +218,24 @@ Hardening the runtime against real-world failure modes: bad HR signal, missing b
 - **Tripod calibration helper** (deferred, per plan §8) — the in-frame visibility check above provides equivalent feedback during pre-roll. A dedicated overlay would be added only if real-world testing reveals framing problems the visibility check doesn't catch.
 
 **Key files:** `lib/pose/sessionStateMachine.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `components/pose/CameraStickman.tsx`, `components/patient/BrowserSupportBanner.tsx`, `app/(patient)/layout.tsx`
+
+---
+
+## Patch — Dexie primary-key migration
+
+Phase 7.1 tried to change the `reps` store PK from `++id` to `repId` in a single Dexie version step. Dexie throws `DatabaseClosedError("Not yet support for changing primary key")` at runtime, so any browser that already had the v1 schema couldn't open the DB at all. Fix: split into v2 (`reps: null` deletes the store) and v3 (recreates with the new PK). Sessions/sets/HR/pose/pause data carries over; only any v1 reps that hadn't yet uploaded are lost. Other tables are untouched.
+
+---
+
+## Patch — Patient run-page 2-column layout
+
+The full-screen camera was visually overwhelming for elderly patients on a tablet. Restructured `SessionRunClient`:
+
+- **Top bar** (compact strip): exercise name + "Set X of Y" left, H10 status + mute right.
+- **Left column (50%)**: live camera with skeleton overlay (`CameraStickman` unchanged).
+- **Right column (50%)**: stacked panels — large reps counter (`{repsCompleted} / {repsTarget}`), HR ring (size 140), and a clean stickman figure (`components/patient/LiveStickman.tsx`). Reference GIF (when present) tucks at the bottom-right of the column. T-pose ring overlays the stickman corner during ACTIVE.
+- **Live stickman component**: dedicated canvas rendered from the latest landmarks via an rAF loop reading from a ref (`latestLmRef`). Avoids 30fps React re-renders. Same skeleton geometry as the camera overlay but on a dark panel without the video underneath.
+- **Pose dispatch**: `handlePose` writes to `latestLmRef.current` so the panel is fed without prop changes.
+- **State overlays** (IDLE / READY / PAUSED / SET_COMPLETE / RESTING / SESSION_COMPLETE) and the camera-error blocker remain full-viewport `absolute inset-0` modals on top of the columns.
+
+**Key files:** `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `components/patient/LiveStickman.tsx`

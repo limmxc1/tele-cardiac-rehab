@@ -37,6 +37,8 @@ const CameraStickman = dynamic(() => import('@/components/pose/CameraStickman'),
   ),
 })
 
+const LiveStickman = dynamic(() => import('@/components/patient/LiveStickman'), { ssr: false })
+
 interface Props {
   prescriptionId: string
   patientId: string
@@ -213,11 +215,16 @@ export default function SessionRunClient({
     return () => { cancelled = true }
   }, [snap.phase, router])
 
+  // Latest pose landmarks for the right-column LiveStickman canvas. Stored in
+  // a ref so 30fps pose updates don't trigger React re-renders of the page.
+  const latestLmRef = useRef<NormalizedLandmark[] | null>(null)
+
   const handlePose = useCallback((poses: NormalizedLandmark[][], timestamp_ms: number) => {
     const sm = smRef.current
     if (!sm) return
     sm.setPersonCount(poses.length, timestamp_ms)
     const first = poses[0]
+    latestLmRef.current = first ?? null
     if (first) {
       sm.feedPose(first, timestamp_ms)
       const sessionId = sessionIdRef.current
@@ -350,14 +357,83 @@ export default function SessionRunClient({
   }, [])
 
   return (
-    <div className="fixed inset-0 bg-black overflow-hidden select-none">
-      {/* Camera — always in background. `key` lets us tear down + remount on retry. */}
-      <CameraStickman
-        key={cameraRetryKey}
-        className="absolute inset-0"
-        onPose={handlePose}
-        onCameraError={(kind, message) => setCameraError({ kind, message })}
-      />
+    <div className="fixed inset-0 bg-slate-950 overflow-hidden select-none flex flex-col">
+      {/* Top bar */}
+      <div className="flex items-center gap-3 border-b border-slate-800 bg-slate-900 px-4 py-2.5 z-10">
+        <div className="flex-1 min-w-0">
+          <p className="text-white font-semibold text-base leading-tight truncate">
+            {snap.set.exerciseName}
+          </p>
+          <p className="text-slate-400 text-xs">
+            Set {snap.set.setNumber} of {snap.set.totalSets}
+          </p>
+        </div>
+        <span className={`text-xs font-medium ${h10Status === 'connected' ? 'text-green-400' : 'text-slate-500'}`}>
+          {h10Status === 'connected' ? 'H10 ●' : 'H10 ○'}
+        </span>
+        <button
+          onClick={handleMuteToggle}
+          className="text-base px-2.5 py-1 rounded-lg bg-slate-800 text-slate-200 hover:bg-slate-700"
+          aria-label={mutedUI ? 'Unmute' : 'Mute'}
+        >
+          {mutedUI ? '🔇' : '🔊'}
+        </button>
+      </div>
+
+      {/* Body — 2 columns: camera left, stats right */}
+      <div className="flex-1 grid grid-cols-2 gap-3 p-3 min-h-0">
+        {/* Left: live camera (with skeleton overlay).
+            `key` lets us tear down + remount on retry. */}
+        <div className="relative rounded-xl overflow-hidden bg-black">
+          <CameraStickman
+            key={cameraRetryKey}
+            className="w-full h-full"
+            onPose={handlePose}
+            onCameraError={(kind, message) => setCameraError({ kind, message })}
+          />
+        </div>
+
+        {/* Right: reps + HR + clean stickman + ref GIF */}
+        <div className="flex flex-col gap-3 min-h-0">
+          {/* Reps counter */}
+          <div className="rounded-xl bg-slate-900 px-6 py-4 text-center">
+            <p className="text-7xl font-bold text-white tabular-nums leading-none">
+              {snap.repsCompleted}
+            </p>
+            <p className="text-slate-400 text-sm mt-2">
+              / {snap.set.repsTarget} reps
+            </p>
+          </div>
+
+          {/* HR ring */}
+          <div className="rounded-xl bg-slate-900 px-6 py-4 flex items-center justify-center">
+            <HRRing hrBpm={snap.hrBpm} hrLimit={hrLimit} size={140} />
+          </div>
+
+          {/* Live stickman figure (clean canvas, no camera background) */}
+          <div className="flex-1 rounded-xl overflow-hidden bg-slate-900 min-h-0 relative">
+            <LiveStickman landmarksRef={latestLmRef} />
+            {/* T-pose ring overlaid on the stickman corner during ACTIVE */}
+            {phase === 'ACTIVE' && snap.tposeProgress > 0 && (
+              <div className="absolute bottom-3 right-3">
+                <TPoseRing progress={snap.tposeProgress} />
+              </div>
+            )}
+          </div>
+
+          {/* Reference GIF (small, only while exercising) */}
+          {isActive && snap.set.referenceGifUrl && (
+            <div className="self-end w-28 h-28 rounded-xl overflow-hidden border border-slate-700">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={snap.set.referenceGifUrl}
+                alt="Reference"
+                className="w-full h-full object-cover"
+              />
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Camera error blocker — full screen because no camera means no session. */}
       {cameraError && (
@@ -383,53 +459,6 @@ export default function SessionRunClient({
           >
             Retry
           </button>
-        </div>
-      )}
-
-      {/* Top bar */}
-      <div className="absolute top-0 inset-x-0 z-10 flex items-center gap-3 px-4 py-3 bg-gradient-to-b from-black/80 to-transparent">
-        <HRRing hrBpm={snap.hrBpm} hrLimit={hrLimit} size={68} />
-        <div className="flex-1 min-w-0 text-center">
-          <p className="text-white font-semibold text-base leading-tight truncate">
-            {snap.set.exerciseName}
-          </p>
-          <p className="text-slate-300 text-sm">
-            Set {snap.set.setNumber} of {snap.set.totalSets}
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1.5">
-          <button
-            onClick={handleMuteToggle}
-            className="text-xs px-2.5 py-1 rounded-lg bg-slate-700/80 text-slate-200"
-          >
-            {mutedUI ? '🔇' : '🔊'}
-          </button>
-          <span className={`text-xs font-medium ${h10Status === 'connected' ? 'text-green-400' : 'text-slate-500'}`}>
-            {h10Status === 'connected' ? 'H10 ●' : 'H10 ○'}
-          </span>
-        </div>
-      </div>
-
-      {/* Bottom: rep counter + reference GIF (during active/ready) */}
-      {isActive && (
-        <div className="absolute bottom-0 inset-x-0 z-10 flex items-end justify-between px-6 py-5 bg-gradient-to-t from-black/80 to-transparent">
-          <div className="bg-black/70 rounded-2xl px-5 py-3 text-center">
-            <p className="text-5xl font-bold text-white tabular-nums">{snap.repsCompleted}</p>
-            <p className="text-slate-400 text-xs mt-0.5">/ {snap.set.repsTarget} reps</p>
-          </div>
-          {snap.set.referenceGifUrl && (
-            <div className="w-24 h-24 rounded-xl overflow-hidden border border-slate-600">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={snap.set.referenceGifUrl} alt="Reference" className="w-full h-full object-cover" />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* T-pose ring (during ACTIVE when holding) */}
-      {phase === 'ACTIVE' && snap.tposeProgress > 0 && (
-        <div className="absolute bottom-24 right-6 z-20">
-          <TPoseRing progress={snap.tposeProgress} />
         </div>
       )}
 
