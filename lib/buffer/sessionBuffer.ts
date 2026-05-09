@@ -30,6 +30,7 @@ export interface BufferedPoseFrame {
 }
 
 export interface PackedFrame {
+  // Epoch ms (Date.now() domain) so pose, HR, and sessions.started_at share one clock.
   ts_ms: number
   lm: [number, number, number][] // 33 landmarks × [x,y,z]
 }
@@ -48,7 +49,7 @@ export interface BufferedSet {
 }
 
 export interface BufferedRep {
-  id?: number
+  repId: string // client-minted UUID; mirrors session_reps.id so retries are idempotent
   sessionSetId: string
   sessionId: string
   repNumber: number
@@ -72,7 +73,7 @@ class SessionBufferDB extends Dexie {
   hrSamples!: Table<BufferedHRSample, number>
   poseFrames!: Table<BufferedPoseFrame, string>
   sets!: Table<BufferedSet, string>
-  reps!: Table<BufferedRep, number>
+  reps!: Table<BufferedRep, string>
   pauses!: Table<BufferedPause, string>
 
   constructor() {
@@ -84,6 +85,10 @@ class SessionBufferDB extends Dexie {
       sets: 'setId, sessionId',
       reps: '++id, sessionId, sessionSetId',
       pauses: 'pauseId, sessionId',
+    })
+    // v2: rep PK becomes the client-minted UUID so retries upsert deterministically.
+    this.version(2).stores({
+      reps: 'repId, sessionId, sessionSetId',
     })
   }
 }
@@ -137,9 +142,9 @@ export async function recordHR(
 
 export async function recordPoseFrame(
   sessionId: string,
-  timestampMs: number,
+  timestampMs: number, // wall-clock epoch ms
   landmarks: NormalizedLandmark[],
-  sessionStartMs: number,
+  sessionStartMs: number, // wall-clock epoch ms of session start
 ): Promise<void> {
   const last = lastAcceptedPoseTs.get(sessionId)
   if (last !== undefined && timestampMs - last < POSE_TARGET_INTERVAL_MS) return
@@ -149,7 +154,8 @@ export async function recordPoseFrame(
   if (offsetMs < 0) return
   const secondOffset = Math.floor(offsetMs / 1000)
   const key = `${sessionId}|${secondOffset}`
-  const packed: PackedFrame = { ts_ms: offsetMs, lm: packLandmarks(landmarks) }
+  // Inner ts_ms = epoch ms (same domain as session_hr_samples.timestamp_ms).
+  const packed: PackedFrame = { ts_ms: timestampMs, lm: packLandmarks(landmarks) }
 
   // Atomic read-modify-write per (session, second).
   await bufferDB.transaction('rw', bufferDB.poseFrames, async () => {
@@ -200,8 +206,8 @@ export async function recordSetComplete(args: {
   await bufferDB.sets.put(existing)
 }
 
-export async function recordRep(rep: Omit<BufferedRep, 'id'>): Promise<void> {
-  await bufferDB.reps.add(rep)
+export async function recordRep(rep: BufferedRep): Promise<void> {
+  await bufferDB.reps.put(rep)
 }
 
 export async function recordPauseStart(args: {
@@ -249,9 +255,47 @@ export async function markSessionUploaded(sessionId: string): Promise<void> {
 }
 
 export async function getUnflushedSessions(): Promise<BufferedSession[]> {
-  // Filter in JS to avoid IDBKeyRange complications with status+uploaded compound.
+  // Includes both 'completed' and 'abandoned'. Skips 'in_progress' — those need
+  // markStaleInProgressAbandoned() first or are still running in another tab.
   const rows = await bufferDB.sessions.where('uploaded').equals(0).toArray()
   return rows.filter((s) => s.status !== 'in_progress')
+}
+
+/**
+ * Mark any in_progress session whose buffer is older than `staleMs` as 'abandoned'
+ * so the next flushPending() picks it up. Catches tab-closes / browser crashes.
+ */
+export async function markStaleInProgressAbandoned(staleMs = 60 * 60 * 1000): Promise<number> {
+  const now = Date.now()
+  const rows = await bufferDB.sessions.where('uploaded').equals(0).toArray()
+  let n = 0
+  for (const s of rows) {
+    if (s.status !== 'in_progress') continue
+    if (now - s.startedAtMs < staleMs) continue
+    s.status = 'abandoned'
+    s.completedAtIso = new Date(now).toISOString()
+    await bufferDB.sessions.put(s)
+    n++
+  }
+  return n
+}
+
+/**
+ * Force-abandon all in_progress sessions for a given patient+prescription
+ * (used when a fresh session is starting — the stale one can't be resumed).
+ */
+export async function abandonStaleSessionsFor(
+  patientId: string,
+  prescriptionId: string,
+): Promise<void> {
+  const rows = await bufferDB.sessions.where('uploaded').equals(0).toArray()
+  for (const s of rows) {
+    if (s.status !== 'in_progress') continue
+    if (s.patientId !== patientId || s.prescriptionId !== prescriptionId) continue
+    s.status = 'abandoned'
+    s.completedAtIso = new Date().toISOString()
+    await bufferDB.sessions.put(s)
+  }
 }
 
 export async function loadSessionBundle(sessionId: string) {

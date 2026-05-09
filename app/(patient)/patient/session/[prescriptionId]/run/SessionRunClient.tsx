@@ -23,6 +23,7 @@ import {
   recordPauseStart,
   recordPauseEnd,
   markSessionComplete,
+  abandonStaleSessionsFor,
 } from '@/lib/buffer/sessionBuffer'
 import { uploadSession } from '@/lib/sync/uploader'
 
@@ -98,6 +99,11 @@ export default function SessionRunClient({
       onSetStart: ({ setIdx, set, ts_ms }) => {
         const sessionId = sessionIdRef.current
         if (!sessionId) return
+        // Resuming from PAUSED also re-fires onSetStart (state machine goes
+        // PAUSED → READY → ACTIVE). Reuse the existing setId so reps from
+        // before the pause and reps after both anchor to one row.
+        const existing = setIdsRef.current.get(setIdx)
+        if (existing) return
         const setId = crypto.randomUUID()
         setIdsRef.current.set(setIdx, setId)
         void recordSetStart({
@@ -115,6 +121,7 @@ export default function SessionRunClient({
         const setId = setIdsRef.current.get(setIdx)
         if (!sessionId || !setId) return
         void recordRep({
+          repId: crypto.randomUUID(),
           sessionId,
           sessionSetId: setId,
           repNumber,
@@ -237,13 +244,29 @@ export default function SessionRunClient({
     sessionIdRef.current = sessionId
     sessionStartWallRef.current = wall
     sessionStartPerfRef.current = perf
-    void startSession({
-      sessionId,
-      prescriptionId,
-      patientId,
-      startedAtMs: wall,
-    }).then(() => smRef.current?.start())
+    // Mark any prior in_progress buffer entries for this patient+prescription
+    // as abandoned so the calendar flusher uploads them next pass.
+    void abandonStaleSessionsFor(patientId, prescriptionId)
+      .then(() => startSession({ sessionId, prescriptionId, patientId, startedAtMs: wall }))
+      .then(() => smRef.current?.start())
   }, [prescriptionId, patientId])
+
+  // If the patient closes the tab mid-session, mark abandoned so the data
+  // doesn't sit in IndexedDB forever as 'in_progress'.
+  useEffect(() => {
+    const handler = () => {
+      const sessionId = sessionIdRef.current
+      if (!sessionId || sessionEndedRef.current) return
+      // Synchronous Dexie write isn't possible; best-effort fire-and-forget.
+      void markSessionComplete(sessionId, Date.now(), 'abandoned')
+    }
+    window.addEventListener('beforeunload', handler)
+    window.addEventListener('pagehide', handler)
+    return () => {
+      window.removeEventListener('beforeunload', handler)
+      window.removeEventListener('pagehide', handler)
+    }
+  }, [])
 
   const handleMuteToggle = useCallback(() => {
     const next = !isMuted()

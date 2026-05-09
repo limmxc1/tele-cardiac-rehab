@@ -170,6 +170,22 @@ Patients exercise at home (Android tablet + Polar H10 chest strap); clinicians r
 
 ---
 
+## Phase 7.1 — Persistence hardening (audit fixes)
+
+Audit of Phase 7 found several blockers; fixed in a follow-up patch:
+
+- **Idempotent uploads** — every `uploader.ts` insert switched to `.upsert` with explicit `onConflict` keys (`id` for sessions/sets/reps/pauses, `session_id,timestamp_ms` for HR, `session_id,second_offset` for pose). A failed mid-upload retry now converges instead of duplicate-PK-throwing on rows the previous attempt already wrote.
+- **Client-minted rep IDs** — `BufferedRep.repId` is now a client UUID stored as the primary key in both Dexie and Supabase, so retries can't multiply rep rows. Bumped Dexie schema to v2.
+- **Pause→resume phantom-set fix** — on resume, the state machine fires `enterReady → enterActive` which re-emits `onSetStart`; `SessionRunClient` now reuses the existing `setId` for that `setIdx` instead of minting a new one (no more orphaned half-completed set rows).
+- **HR/pose timestamp domain alignment** — pose `frames[].ts_ms` now stores epoch ms (same domain as `session_hr_samples.timestamp_ms` and `sessions.started_at`). The outer `second_offset` still encodes session-relative seconds for cheap chunking. Joining HR + pose is now a direct timestamp comparison.
+- **Resume + leak fix** — `markStaleInProgressAbandoned` (called by `PendingUploadFlusher` on calendar load) promotes any `in_progress` session older than 1 hour to `abandoned` so `flushPending` picks it up. `handleStart` calls `abandonStaleSessionsFor(patient, prescription)` so a fresh session start retires whatever the previous tab/crash left behind. `beforeunload` / `pagehide` listeners mark the active session abandoned on tab close.
+- **Concurrent-flush race** — added a per-`sessionId` in-memory mutex in `uploader.ts` so the post-completion path and the calendar flusher can't double-upload the same session.
+- **Pose row ordering + bundle-wide HR dedup** — pose batches now sorted by `secondOffset`, HR dedup runs across the entire bundle (not per-batch).
+
+**Key files:** `lib/buffer/sessionBuffer.ts`, `lib/sync/uploader.ts`, `components/patient/PendingUploadFlusher.tsx`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`
+
+---
+
 ## Remaining phases
 
 | Phase | Description |

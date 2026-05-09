@@ -23,7 +23,14 @@ export default function PendingUploadFlusher() {
       await new Promise((r) => setTimeout(r, 250))
       if (cancelled) return
 
-      const { getUnflushedSessions } = await import('@/lib/buffer/sessionBuffer')
+      const { getUnflushedSessions, markStaleInProgressAbandoned } = await import(
+        '@/lib/buffer/sessionBuffer'
+      )
+      // Promote any in_progress sessions older than 1 hour to abandoned so they
+      // get uploaded too (covers tab-close / browser-crash leaks).
+      await markStaleInProgressAbandoned()
+      if (cancelled) return
+
       const pending = await getUnflushedSessions()
       if (cancelled || pending.length === 0) return
 
