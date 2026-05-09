@@ -344,6 +344,9 @@ export default function NewExerciseClient() {
           </div>
         </div>
 
+        {/* Always mount the video element so videoRef is available before demo starts */}
+        <video ref={videoRef} className="hidden" playsInline muted />
+
         {/* Demo Mode */}
         <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
           <div className="flex items-center justify-between">
@@ -380,9 +383,6 @@ export default function NewExerciseClient() {
           {/* Camera + stickman canvas */}
           {(demoStatus === 'running' || demoStatus === 'stopped') && (
             <div className="space-y-3">
-              {/* Hidden video element */}
-              <video ref={videoRef} hidden playsInline muted />
-
               {demoStatus === 'running' && (
                 <div className="relative">
                   <canvas
