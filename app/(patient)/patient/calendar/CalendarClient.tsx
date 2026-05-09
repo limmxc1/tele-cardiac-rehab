@@ -70,6 +70,11 @@ export default function CalendarClient() {
 
   useEffect(() => {
     if (!user?.id) return
+    let cancelled = false
+    // Show the loading state and reset day-detail panel on month change.
+    // This is a legitimate fetch-on-dependency-change effect; the lint rule
+    // is overly strict for this pattern.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     setSelectedDate(null)
     setItems([])
@@ -79,9 +84,11 @@ export default function CalendarClient() {
         missedMarkedRef.current = true
       }
       const data = await getMonthPrescriptionsAction(user.id, year, month)
+      if (cancelled) return
       setPrescriptions(data)
       setLoading(false)
     })()
+    return () => { cancelled = true }
   }, [user?.id, year, month])
 
   const prescMap = Object.fromEntries(prescriptions.map((p) => [p.scheduled_date, p]))

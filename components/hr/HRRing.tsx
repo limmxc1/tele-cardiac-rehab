@@ -14,7 +14,9 @@ export default function HRRing({ hrBpm, hrLimit, size = 80 }: Props) {
   const blinkRef = useRef(false)
   const rafRef = useRef<number>(0)
 
-  hrRef.current = hrBpm
+  // Mirror the latest hrBpm into a ref so the rAF draw loop can read the
+  // current value without depending on it (which would tear down the canvas).
+  useEffect(() => { hrRef.current = hrBpm }, [hrBpm])
 
   useEffect(() => {
     const canvas = canvasRef.current

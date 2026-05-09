@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 import type { WorkerInMsg, WorkerOutMsg } from '@/lib/pose/poseWorker'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 
@@ -71,57 +71,66 @@ export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, 
   const rafRef = useRef<number>(0)
   const streamRef = useRef<MediaStream | null>(null)
 
-  const sendFrame = useCallback(() => {
-    const video = videoRef.current
-    const overlay = overlayRef.current
-    if (!video || video.readyState < 2 || !workerReadyRef.current || workerBusyRef.current) {
-      rafRef.current = requestAnimationFrame(sendFrame)
-      return
-    }
-
-    const w = video.videoWidth
-    const h = video.videoHeight
-    if (w === 0 || h === 0) {
-      rafRef.current = requestAnimationFrame(sendFrame)
-      return
-    }
-
-    if (overlay && (overlay.width !== w || overlay.height !== h)) {
-      overlay.width = w
-      overlay.height = h
-    }
-
-    createImageBitmap(video).then((bitmap) => {
-      if (!workerRef.current) { bitmap.close(); return }
-      workerBusyRef.current = true
-      const msg: WorkerInMsg = { type: 'FRAME', bitmap, timestamp_ms: performance.now() }
-      workerRef.current.postMessage(msg, [bitmap])
-    }).catch(() => {})
-
-    rafRef.current = requestAnimationFrame(sendFrame)
-  }, [])
+  // Latest callback props are stashed in a ref so the rAF/worker loop sees
+  // current handlers without depending on them (which would tear the worker
+  // down whenever the parent passes a new inline function).
+  const cbRef = useRef({ onPersonCount, onWorkerStatus, onPose })
+  useEffect(() => {
+    cbRef.current = { onPersonCount, onWorkerStatus, onPose }
+  }, [onPersonCount, onWorkerStatus, onPose])
 
   useEffect(() => {
     let cancelled = false
+
+    // sendFrame is a hoisted function declaration — self-reference is legal here.
+    function sendFrame() {
+      const video = videoRef.current
+      const overlay = overlayRef.current
+      if (!video || video.readyState < 2 || !workerReadyRef.current || workerBusyRef.current) {
+        rafRef.current = requestAnimationFrame(sendFrame)
+        return
+      }
+
+      const w = video.videoWidth
+      const h = video.videoHeight
+      if (w === 0 || h === 0) {
+        rafRef.current = requestAnimationFrame(sendFrame)
+        return
+      }
+
+      if (overlay && (overlay.width !== w || overlay.height !== h)) {
+        overlay.width = w
+        overlay.height = h
+      }
+
+      createImageBitmap(video).then((bitmap) => {
+        if (!workerRef.current) { bitmap.close(); return }
+        workerBusyRef.current = true
+        const msg: WorkerInMsg = { type: 'FRAME', bitmap, timestamp_ms: performance.now() }
+        workerRef.current.postMessage(msg, [bitmap])
+      }).catch(() => {})
+
+      rafRef.current = requestAnimationFrame(sendFrame)
+    }
 
     const worker = new Worker(
       new URL('../../lib/pose/poseWorker.ts', import.meta.url),
     )
     workerRef.current = worker
-    onWorkerStatus?.('loading')
+    cbRef.current.onWorkerStatus?.('loading')
 
     worker.onmessage = (e: MessageEvent<WorkerOutMsg>) => {
       const msg = e.data
       if (msg.type === 'READY') {
         workerReadyRef.current = true
-        onWorkerStatus?.('ready')
+        cbRef.current.onWorkerStatus?.('ready')
       } else if (msg.type === 'RESULT') {
         workerBusyRef.current = false
-        onPersonCount?.(msg.poses.length)
-        onPose?.(msg.poses, msg.timestamp_ms)
+        cbRef.current.onPersonCount?.(msg.poses.length)
+        cbRef.current.onPose?.(msg.poses, msg.timestamp_ms)
         if (overlayRef.current) drawStickman(overlayRef.current, msg.poses)
       } else if (msg.type === 'ERROR') {
-        onWorkerStatus?.('error')
+        cbRef.current.onWorkerStatus?.('error')
         console.error('[poseWorker]', msg.message)
       }
     }
@@ -154,7 +163,7 @@ export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, 
       workerReadyRef.current = false
       workerBusyRef.current = false
     }
-  }, [sendFrame, onPersonCount, onWorkerStatus, onPose])
+  }, [])
 
   return (
     <div className={`relative bg-black overflow-hidden ${className ?? ''}`}>

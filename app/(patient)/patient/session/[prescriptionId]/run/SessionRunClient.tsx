@@ -88,9 +88,12 @@ export default function SessionRunClient({
     completedReps: [],
   }))
   const [h10Status, setH10Status] = useState<H10Status>('idle')
-  const [mutedUI, setMutedUI] = useState(false)
-
-  useEffect(() => { setMutedUI(isMuted()) }, [])
+  // Lazy init reads localStorage on the client. On the server `window` is
+  // undefined and we default to false; React re-renders on hydration if the
+  // persisted value differs (benign for a small UI flag).
+  const [mutedUI, setMutedUI] = useState<boolean>(() =>
+    typeof window === 'undefined' ? false : isMuted(),
+  )
 
   useEffect(() => { snapPhaseRef.current = snap.phase }, [snap.phase])
 

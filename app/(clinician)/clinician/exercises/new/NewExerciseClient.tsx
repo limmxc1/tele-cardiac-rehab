@@ -45,6 +45,7 @@ export default function NewExerciseClient() {
   const [demoStatus, setDemoStatus] = useState<DemoStatus>('idle')
   const [currentAngle, setCurrentAngle] = useState<number | null>(null)
   const [histogramData, setHistogramData] = useState<number[]>(Array(BUCKETS).fill(0))
+  const [totalSamples, setTotalSamples] = useState(0)
 
   // Save state
   const [saving, setSaving] = useState(false)
@@ -73,6 +74,9 @@ export default function NewExerciseClient() {
     ;(poseLandmarkerRef.current as any)?.close?.()
     poseLandmarkerRef.current = null
     setDemoStatus('stopped')
+    // Flush final sample count + histogram so the UI reflects the full demo.
+    setTotalSamples(angleHistoryRef.current.length)
+    setHistogramData(buildHistogram(angleHistoryRef.current))
 
     // Auto-suggest thresholds from the P10/P90 of recorded angles
     const history = angleHistoryRef.current
@@ -98,6 +102,7 @@ export default function NewExerciseClient() {
     setError(null)
     angleHistoryRef.current = []
     setHistogramData(Array(BUCKETS).fill(0))
+    setTotalSamples(0)
     setCurrentAngle(null)
 
     try {
@@ -171,6 +176,7 @@ export default function NewExerciseClient() {
               frameCount++
               if (frameCount % 20 === 0) {
                 setHistogramData(buildHistogram(angleHistoryRef.current))
+                setTotalSamples(angleHistoryRef.current.length)
               }
             }
           }
@@ -251,7 +257,6 @@ export default function NewExerciseClient() {
     }
   }
 
-  const totalSamples = angleHistoryRef.current.length
   const hasHistData = histogramData.some((v) => v > 0)
   const maxCount = Math.max(...histogramData, 1)
 
