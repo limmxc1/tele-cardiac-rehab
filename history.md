@@ -556,3 +556,16 @@ User hit a perpetual 5-attempt retry loop on `flushPending` after a buffered rec
 - `PendingUploadFlusher` distinguishes "abandoned" results (parent row deleted) from "failed" ones (transient errors that will retry next time). The toast now reads "Discarded N recording(s) — the matching prescription was deleted." instead of looping silently.
 
 **Key files:** `lib/sync/uploader.ts`, `components/patient/PendingUploadFlusher.tsx`
+
+---
+
+## Patch — Save full body in playback, keep graphs scoped to tracked joints
+
+User feedback on the sparse-pose model: clinicians want to *see* the whole body during playback for context, even when only a handful of joints are graphed. The "data minimization" pivot was scoping too aggressively.
+
+- `recordPoseFrame()` is back to writing all 33 landmarks per frame (dense `[number, number, number][]`). The `trackedIndices` parameter is gone; SessionRunClient just passes the landmarks through.
+- Playback `StickmanCanvas` reverts to the standard MediaPipe `POSE_CONNECTIONS` and renders the whole skeleton. Loader still normalizes both legacy sparse and new dense `lm` shapes into one `SparseLandmarks` map, so the drawing path doesn't care which format a session was recorded in.
+- `MetricsTimeline` is unchanged — angle charts continue to filter to `bundle.trackedJoints`, so clinicians see exactly the joints they configured (one trace per joint, both-side rows averaged).
+- Net effect: the whole stickman replays for context, while the graphs stay focused on the configured joints.
+
+**Key files:** `lib/buffer/sessionBuffer.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `components/playback/StickmanCanvas.tsx`, `components/playback/PlaybackClient.tsx`

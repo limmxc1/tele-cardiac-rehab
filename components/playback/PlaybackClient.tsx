@@ -84,7 +84,6 @@ export default function PlaybackClient({ bundle }: Props) {
           <div className="aspect-[4/3] w-full">
             <StickmanCanvas
               poses={bundle.poses}
-              trackedJoints={bundle.trackedJoints}
               currentTMs={currentTMs}
             />
           </div>

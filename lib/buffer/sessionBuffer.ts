@@ -28,12 +28,14 @@ export interface BufferedPoseFrame {
 }
 
 /**
- * Sparse pose frame: only the landmark indices the clinician asked to track
- * are saved. `lm` is keyed by landmark index (0–32).
+ * Pose frame. We save all 33 landmarks so the playback stickman can render
+ * the whole body — angle graphs filter to the tracked joints downstream.
+ * Older recordings may carry a sparse `Record<number, [x,y,z]>` shape; the
+ * playback loader normalizes both into one map.
  */
 export interface PackedFrame {
   ts_ms: number
-  lm: Record<number, [number, number, number]>
+  lm: [number, number, number][]
 }
 
 export interface BufferedSet {
@@ -86,14 +88,10 @@ export function resetPoseDownsampler(sessionId: string): void {
   lastAcceptedPoseTs.delete(sessionId)
 }
 
-function packLandmarksSparse(
-  lm: NormalizedLandmark[],
-  trackedIndices: readonly number[],
-): Record<number, [number, number, number]> {
-  const out: Record<number, [number, number, number]> = {}
-  for (const i of trackedIndices) {
+function packLandmarks(lm: NormalizedLandmark[]): [number, number, number][] {
+  const out: [number, number, number][] = new Array(lm.length)
+  for (let i = 0; i < lm.length; i++) {
     const p = lm[i]
-    if (!p) continue
     out[i] = [p.x, p.y, p.z ?? 0]
   }
   return out
@@ -132,9 +130,7 @@ export async function recordPoseFrame(
   timestampMs: number,
   landmarks: NormalizedLandmark[],
   sessionStartMs: number,
-  trackedIndices: readonly number[],
 ): Promise<void> {
-  if (trackedIndices.length === 0) return
   const last = lastAcceptedPoseTs.get(sessionId)
   if (last !== undefined && timestampMs - last < POSE_TARGET_INTERVAL_MS) return
   lastAcceptedPoseTs.set(sessionId, timestampMs)
@@ -145,7 +141,7 @@ export async function recordPoseFrame(
   const key = `${sessionId}|${secondOffset}`
   const packed: PackedFrame = {
     ts_ms: timestampMs,
-    lm: packLandmarksSparse(landmarks, trackedIndices),
+    lm: packLandmarks(landmarks),
   }
 
   await bufferDB.transaction('rw', bufferDB.poseFrames, async () => {

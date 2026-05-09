@@ -1,9 +1,17 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { JOINT_TRIPLETS } from '@/lib/pose/landmarks'
-import type { TrackedJointSpec } from '@/app/actions/exercises'
 import type { PlaybackPose, SparseLandmarks } from '@/lib/playback/loader'
+
+/** Standard MediaPipe pose connections — full body, anatomical view. */
+const POSE_CONNECTIONS: [number, number][] = [
+  [11, 12],
+  [11, 13], [13, 15],
+  [12, 14], [14, 16],
+  [11, 23], [12, 24], [23, 24],
+  [23, 25], [25, 27], [27, 29], [27, 31],
+  [24, 26], [26, 28], [28, 30], [28, 32],
+]
 
 function findFrameIndex(poses: PlaybackPose[], tMs: number): number {
   if (poses.length === 0) return -1
@@ -24,9 +32,9 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 /**
- * Resolve the interpolated sparse landmark map at `currentTMs`. Only landmarks
- * present in BOTH frames get lerped; landmarks present in only one frame are
- * carried through unchanged. Indices missing from both frames stay missing.
+ * Resolve the interpolated landmark map at `currentTMs`. Loader normalizes
+ * dense (new full-body) and sparse (legacy joint-only) recordings into the
+ * same `SparseLandmarks` Record so the drawing path doesn't have to care.
  */
 export function resolveFrame(
   poses: PlaybackPose[],
@@ -57,46 +65,17 @@ export function resolveFrame(
   return out
 }
 
-/**
- * Build the segment list to draw given the tracked joints — each joint's
- * triplet contributes two segments (proximal-joint and joint-distal). Deduped
- * across joints so shared bones (e.g. shoulder for both elbow and shoulder
- * tracking) don't draw twice.
- */
-function trackedSegments(tracked: readonly TrackedJointSpec[]): [number, number][] {
-  const seen = new Set<string>()
-  const out: [number, number][] = []
-  for (const t of tracked) {
-    const trips = JOINT_TRIPLETS[t.joint]
-    if (!trips) continue
-    const sides: ('left' | 'right')[] =
-      t.side === 'both' ? ['left', 'right'] : [t.side]
-    for (const s of sides) {
-      const triplet = trips[s]
-      if (!triplet) continue
-      const pairs: [number, number][] = [
-        [triplet[0], triplet[1]],
-        [triplet[1], triplet[2]],
-      ]
-      for (const [a, b] of pairs) {
-        const key = a < b ? `${a}_${b}` : `${b}_${a}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        out.push([a, b])
-      }
-    }
-  }
-  return out
-}
-
 interface Props {
   poses: PlaybackPose[]
-  trackedJoints: readonly TrackedJointSpec[]
   currentTMs: number
   className?: string
 }
 
-export default function StickmanCanvas({ poses, trackedJoints, currentTMs, className }: Props) {
+/**
+ * Stickman replay. Anatomical view — landmarks are drawn as-is, so the
+ * patient's right hand appears on the viewer's left.
+ */
+export default function StickmanCanvas({ poses, currentTMs, className }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -145,20 +124,16 @@ export default function StickmanCanvas({ poses, trackedJoints, currentTMs, class
 
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-
-    const segments = trackedSegments(trackedJoints)
-    if (segments.length > 0) {
-      ctx.strokeStyle = '#22c55e'
-      ctx.lineWidth = 3 * dpr
-      for (const [a, b] of segments) {
-        const A = lm[a]
-        const B = lm[b]
-        if (!A || !B) continue
-        ctx.beginPath()
-        ctx.moveTo(px(A[0]), py(A[1]))
-        ctx.lineTo(px(B[0]), py(B[1]))
-        ctx.stroke()
-      }
+    ctx.strokeStyle = '#22c55e'
+    ctx.lineWidth = 3 * dpr
+    for (const [a, b] of POSE_CONNECTIONS) {
+      const A = lm[a]
+      const B = lm[b]
+      if (!A || !B) continue
+      ctx.beginPath()
+      ctx.moveTo(px(A[0]), py(A[1]))
+      ctx.lineTo(px(B[0]), py(B[1]))
+      ctx.stroke()
     }
 
     ctx.fillStyle = '#86efac'
@@ -169,7 +144,7 @@ export default function StickmanCanvas({ poses, trackedJoints, currentTMs, class
       ctx.arc(px(p[0]), py(p[1]), 3.5 * dpr, 0, Math.PI * 2)
       ctx.fill()
     }
-  }, [poses, trackedJoints, currentTMs])
+  }, [poses, currentTMs])
 
   return (
     <canvas

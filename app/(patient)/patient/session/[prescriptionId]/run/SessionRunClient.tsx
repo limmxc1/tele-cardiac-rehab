@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import { useRouter } from 'next/navigation'
 import { PolarH10, type H10Status } from '@/lib/hr/polarH10'
@@ -10,7 +10,6 @@ import {
   type SessionSnapshot,
   type SessionEvents,
 } from '@/lib/pose/sessionStateMachine'
-import { trackedLandmarkIndices } from '@/lib/pose/landmarks'
 import { isMuted, setMuted } from '@/lib/audio/cues'
 import HRRing from '@/components/hr/HRRing'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
@@ -69,11 +68,6 @@ export default function SessionRunClient({
 
   const [uploadState, setUploadState] = useState<UploadState>('idle')
   const [uploadError, setUploadError] = useState<string | null>(null)
-
-  const trackedIndices = useMemo(
-    () => trackedLandmarkIndices(exercise.trackedJoints),
-    [exercise.trackedJoints],
-  )
 
   const toWall = useCallback((perfMs: number) => {
     return clockBaseWallRef.current + (perfMs - clockBasePerfRef.current)
@@ -175,26 +169,21 @@ export default function SessionRunClient({
     if (!first) return
     sm.feedPose(first, timestamp_ms)
 
-    // Save sparse pose frames only while RECORDING. No "fully in frame" gate
-    // here — the user asked for no auto-pauses, so partial frames just become
-    // gaps in the timeline (the tracked joints' triplet fields will be blank
-    // for landmarks below the model's confidence floor).
+    // Save full-body pose frames only while RECORDING. No "fully in frame"
+    // gate — the user asked for no auto-pauses, so partial frames just become
+    // gaps in the timeline (low-visibility landmarks come through as the
+    // model's best-guess coords).
     const sessionId = sessionIdRef.current
-    if (
-      sessionId &&
-      phaseRef.current === 'RECORDING' &&
-      trackedIndices.length > 0
-    ) {
+    if (sessionId && phaseRef.current === 'RECORDING') {
       const wallMs = toWall(timestamp_ms)
       void recordPoseFrame(
         sessionId,
         wallMs,
         first,
         sessionStartedAtWallRef.current,
-        trackedIndices,
       )
     }
-  }, [toWall, trackedIndices])
+  }, [toWall])
 
   const handleConnectH10 = useCallback(async () => {
     setH10Error(null)
