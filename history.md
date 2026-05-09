@@ -204,8 +204,17 @@ Synchronized session replay for clinicians: stickman, HR trend, scrubber, per-re
 
 ---
 
-## Remaining phases
+## Phase 9 — Polish + edge cases
 
-| Phase | Description |
-|---|---|
-| 9 | Polish — frame visibility check, implausible HR handling, browser/permission error screens, session abandonment recovery |
+Hardening the runtime against real-world failure modes: bad HR signal, missing browser features, denied permissions, dropped sessions, and patients who haven't framed up yet.
+
+- **Implausible HR filtering** — `feedHR` still surfaces every raw bpm to the UI (so clinicians see the dropouts), but the breach/recovery state machine only reacts to readings in [40, 220]. H10's signal-loss zeros and momentary spikes would otherwise either spuriously pause the session or auto-resume from a real breach.
+- **Browser support banner** — `components/patient/BrowserSupportBanner.tsx` mounted in the patient layout. Lazy-init checks for Web Bluetooth, MediaDevices.getUserMedia, and iOS UA on the client; renders an amber dismissable banner if anything is missing. Dismissal is persisted in localStorage.
+- **Camera permission error UI** — `CameraStickman` now classifies getUserMedia rejection (`denied` / `unavailable` / `unknown`) and bubbles it up via `onCameraError`. `SessionRunClient` shows a full-screen blocker with a friendly message and Retry button; Retry tears down and remounts the camera by bumping a `cameraRetryKey` used as the component's `key`.
+- **Bluetooth permission feedback** — H10 connect failures are translated to friendly messages (`SecurityError` / `NotAllowedError` / "not supported") and rendered under the Connect button. `NotFoundError` (user dismissed the chooser) is silent — that's not really an error.
+- **Resume previous session** — On run-page mount we call `findResumableSession(patientId, prescriptionId)`. If a buffered `in_progress` session exists, the IDLE overlay swaps to a "Resume previous session?" panel with Resume / Discard. **Resume** keeps the existing `sessionId` and ORIGINAL `startedAt` (so pose-frame `second_offset` chunking stays continuous with the buffered data), but resets the `clockBaseWall` / `clockBasePerf` pair to "now" so `toWall()` keeps producing real wall-clock timestamps. **Discard** calls `abandonStaleSessionsFor` so the buffered data uploads on the next flush, then drops the offer.
+- **Clock-baseline split** — `sessionStartWallRef`/`sessionStartPerfRef` were doing two jobs (perf↔wall conversion AND second_offset baseline). Split into `clockBaseWallRef`+`clockBasePerfRef` (conversion, reset on resume) and `sessionStartedAtWallRef` (chunking baseline, never moved).
+- **Pre-set in-frame visibility check** — `SessionStateMachine` now gates READY → ACTIVE on TWO conditions: 3-second countdown finished AND all 33 landmarks `visibility ≥ 0.5` for 2 continuous seconds. New `inFrameProgress` field on the snapshot. The READY overlay shows a "Step fully into the frame" amber coaching message and progress bar once the countdown hits zero but visibility hasn't sustained yet.
+- **Tripod calibration helper** (deferred, per plan §8) — the in-frame visibility check above provides equivalent feedback during pre-roll. A dedicated overlay would be added only if real-world testing reveals framing problems the visibility check doesn't catch.
+
+**Key files:** `lib/pose/sessionStateMachine.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `components/pose/CameraStickman.tsx`, `components/patient/BrowserSupportBanner.tsx`, `app/(patient)/layout.tsx`

@@ -9,6 +9,20 @@ import {
 
 export type { PauseReason, RepEvent }
 
+/** Visibility threshold (0..1) for a landmark to count as "in frame". */
+const VISIBILITY_THRESHOLD = 0.5
+/** Continuous time the body must be fully in frame before READY → ACTIVE. */
+const IN_FRAME_REQUIRED_MS = 2000
+
+function isFullyInFrame(landmarks: NormalizedLandmark[]): boolean {
+  if (landmarks.length < 33) return false
+  for (const lm of landmarks) {
+    const v = lm.visibility
+    if (v === undefined || v < VISIBILITY_THRESHOLD) return false
+  }
+  return true
+}
+
 export type SessionPhase =
   | 'IDLE' | 'READY' | 'ACTIVE' | 'PAUSED'
   | 'SET_COMPLETE' | 'RESTING' | 'SESSION_COMPLETE'
@@ -56,6 +70,8 @@ export interface SessionSnapshot {
   hrBpm: number | null
   countdownSecondsLeft: number
   completedReps: RepEvent[]
+  /** 0..1 — how close the patient is to having a full body in frame, used during READY. */
+  inFrameProgress: number
 }
 
 export class SessionStateMachine {
@@ -80,6 +96,10 @@ export class SessionStateMachine {
   private personCount = 1
   private outOfFrameStart: number | null = null
   private multiPersonStart: number | null = null
+
+  // READY → ACTIVE gating: countdown must finish AND a full body must be visible
+  // for at least IN_FRAME_REQUIRED_MS continuously before the set begins.
+  private inFrameSinceMs: number | null = null
 
   private restInterval: ReturnType<typeof setInterval> | null = null
 
@@ -108,12 +128,32 @@ export class SessionStateMachine {
       this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
     } else if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach') {
       this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
+    } else if (this.phase === 'READY') {
+      // Track sustained full-body visibility; gate the ACTIVE transition on it.
+      if (isFullyInFrame(landmarks)) {
+        if (this.inFrameSinceMs === null) this.inFrameSinceMs = timestamp_ms
+      } else {
+        this.inFrameSinceMs = null
+      }
+      this.maybeEnterActive()
+      return
     }
     this.emit()
   }
 
   feedHR(hr_bpm: number, timestamp_ms: number): void {
+    // Always surface the raw value to the UI; clinicians can see the dropouts.
     this.latestHr = hr_bpm
+
+    // …but only let the breach/recovery state machine react to physiologically
+    // plausible readings. H10 emits 0 (and occasional spikes) during signal
+    // loss; using those would either spuriously pause the session (false high)
+    // or auto-resume from a real breach (false low).
+    const plausible = hr_bpm >= 40 && hr_bpm <= 220
+    if (!plausible) {
+      this.emit()
+      return
+    }
 
     if (this.phase === 'ACTIVE') {
       if (hr_bpm > this.hrLimit) {
@@ -193,12 +233,30 @@ export class SessionStateMachine {
     this.tposeProgress = 0
     this.tposeDetector.reset()
     this.countdownEndMs = performance.now() + 3000
+    this.inFrameSinceMs = null
     countdownCue()
+    // Ready→Active gating happens in feedPose so the in-frame check can also
+    // hold the transition. Keep a backup timer to fire emit() when the
+    // countdown crosses zero, even if no pose has arrived yet.
     setTimeout(() => {
       if (this.destroyed || this.phase !== 'READY') return
-      this.enterActive()
-      this.emit()
+      this.maybeEnterActive()
     }, 3000)
+  }
+
+  private maybeEnterActive(): void {
+    if (this.phase !== 'READY') return
+    const now = performance.now()
+    if (now < this.countdownEndMs) {
+      this.emit()
+      return
+    }
+    if (this.inFrameSinceMs === null || now - this.inFrameSinceMs < IN_FRAME_REQUIRED_MS) {
+      this.emit()
+      return
+    }
+    this.enterActive()
+    this.emit()
   }
 
   private enterActive(): void {
@@ -321,9 +379,14 @@ export class SessionStateMachine {
 
   private emit(): void {
     if (this.destroyed) return
+    const now = performance.now()
     const countdownSecondsLeft =
       this.phase === 'READY'
-        ? Math.max(0, Math.ceil((this.countdownEndMs - performance.now()) / 1000))
+        ? Math.max(0, Math.ceil((this.countdownEndMs - now) / 1000))
+        : 0
+    const inFrameProgress =
+      this.phase === 'READY' && this.inFrameSinceMs !== null
+        ? Math.min(1, (now - this.inFrameSinceMs) / IN_FRAME_REQUIRED_MS)
         : 0
     this.onChange({
       phase: this.phase,
@@ -335,6 +398,7 @@ export class SessionStateMachine {
       hrBpm: this.latestHr,
       countdownSecondsLeft,
       completedReps: this.completedReps,
+      inFrameProgress,
     })
   }
 }

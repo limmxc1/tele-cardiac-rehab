@@ -24,6 +24,7 @@ import {
   recordPauseEnd,
   markSessionComplete,
   abandonStaleSessionsFor,
+  findResumableSession,
 } from '@/lib/buffer/sessionBuffer'
 import { uploadSession } from '@/lib/sync/uploader'
 
@@ -59,12 +60,21 @@ export default function SessionRunClient({
 
   // Session/persistence refs.
   const sessionIdRef = useRef<string | null>(null)
-  const sessionStartPerfRef = useRef<number>(0)
-  const sessionStartWallRef = useRef<number>(0)
+  // Clock-conversion baseline: paired (perf, wall) captured at the same instant
+  // we attached to the session — for fresh sessions this is session start; for
+  // a resume it's the resume moment. Used by toWall() to convert perf timestamps
+  // (from MediaPipe / state machine) into current wall time.
+  const clockBasePerfRef = useRef<number>(0)
+  const clockBaseWallRef = useRef<number>(0)
+  // The actual original session start wall time. For fresh sessions == clockBaseWallRef;
+  // for resumed sessions, points at the original `startedAt` so pose-frame
+  // second_offset chunking stays continuous with the existing buffer.
+  const sessionStartedAtWallRef = useRef<number>(0)
   const setIdsRef = useRef<Map<number, string>>(new Map())
   const activePauseIdRef = useRef<string | null>(null)
   const sessionEndedRef = useRef(false)
   const uploadKickedRef = useRef(false)
+  const [resumable, setResumable] = useState<{ sessionId: string; startedAtMs: number } | null>(null)
 
   const [uploadState, setUploadState] = useState<UploadState>('idle')
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -73,7 +83,7 @@ export default function SessionRunClient({
 
   /** Convert performance.now()-style ms to wall-clock ms using the captured offset. */
   const toWall = useCallback((perfMs: number) => {
-    return sessionStartWallRef.current + (perfMs - sessionStartPerfRef.current)
+    return clockBaseWallRef.current + (perfMs - clockBasePerfRef.current)
   }, [])
 
   const [snap, setSnap] = useState<SessionSnapshot>(() => ({
@@ -86,8 +96,12 @@ export default function SessionRunClient({
     hrBpm: null,
     countdownSecondsLeft: 0,
     completedReps: [],
+    inFrameProgress: 0,
   }))
   const [h10Status, setH10Status] = useState<H10Status>('idle')
+  const [h10Error, setH10Error] = useState<string | null>(null)
+  const [cameraError, setCameraError] = useState<{ kind: 'denied' | 'unavailable' | 'unknown'; message: string } | null>(null)
+  const [cameraRetryKey, setCameraRetryKey] = useState(0)
   // Lazy init reads localStorage on the client. On the server `window` is
   // undefined and we default to false; React re-renders on hydration if the
   // persisted value differs (benign for a small UI flag).
@@ -210,12 +224,13 @@ export default function SessionRunClient({
       // Only record while ACTIVE — wasted bytes during overlays/idle add up fast.
       if (sessionId && smRef.current && snapPhaseRef.current === 'ACTIVE') {
         const wallMs = toWall(timestamp_ms)
-        void recordPoseFrame(sessionId, wallMs, first, sessionStartWallRef.current)
+        void recordPoseFrame(sessionId, wallMs, first, sessionStartedAtWallRef.current)
       }
     }
   }, [toWall])
 
   const handleConnectH10 = useCallback(async () => {
+    setH10Error(null)
     const h10 = new PolarH10()
     h10Ref.current = h10
     h10.onStatus((status) => {
@@ -230,9 +245,26 @@ export default function SessionRunClient({
         void recordHR(sessionId, s.timestamp_ms, s.hr_bpm)
       }
     })
-    try { await h10.connect() } catch (err) {
+    try {
+      await h10.connect()
+    } catch (err: unknown) {
       console.error('[H10]', err)
       h10Ref.current = null
+      const name = err instanceof DOMException ? err.name : ''
+      // NotFoundError = user dismissed the chooser without picking; not an error.
+      if (name !== 'NotFoundError') {
+        const friendly =
+          name === 'SecurityError'
+            ? 'Bluetooth permission denied. Tap "Connect H10" again and accept.'
+            : name === 'NotAllowedError'
+              ? 'Bluetooth blocked. Open browser settings to allow Bluetooth, then retry.'
+              : err instanceof Error && err.message.includes('not supported')
+                ? 'Web Bluetooth not supported on this browser. Use Chrome on Android.'
+                : err instanceof Error
+                  ? err.message
+                  : 'Could not connect to Polar H10.'
+        setH10Error(friendly)
+      }
     }
   }, [])
 
@@ -245,14 +277,46 @@ export default function SessionRunClient({
     const wall = Date.now()
     const perf = performance.now()
     sessionIdRef.current = sessionId
-    sessionStartWallRef.current = wall
-    sessionStartPerfRef.current = perf
+    clockBaseWallRef.current = wall
+    clockBasePerfRef.current = perf
+    sessionStartedAtWallRef.current = wall
     // Mark any prior in_progress buffer entries for this patient+prescription
     // as abandoned so the calendar flusher uploads them next pass.
     void abandonStaleSessionsFor(patientId, prescriptionId)
       .then(() => startSession({ sessionId, prescriptionId, patientId, startedAtMs: wall }))
       .then(() => smRef.current?.start())
   }, [prescriptionId, patientId])
+
+  // Resume an in-progress session left in IndexedDB (browser crashed, tab
+  // closed mid-rep, etc.). Does NOT abandon other sessions — the buffer's
+  // existing data stays intact and we keep recording into the same sessionId.
+  const handleResume = useCallback(() => {
+    if (!resumable || sessionIdRef.current) return
+    sessionIdRef.current = resumable.sessionId
+    clockBaseWallRef.current = Date.now()
+    clockBasePerfRef.current = performance.now()
+    sessionStartedAtWallRef.current = resumable.startedAtMs
+    setResumable(null)
+    smRef.current?.start()
+  }, [resumable])
+
+  // Discard the resumable session: mark it abandoned so the calendar uploads
+  // whatever was buffered, then drop the offer so the user sees the normal
+  // Start flow.
+  const handleDiscardResumable = useCallback(() => {
+    void abandonStaleSessionsFor(patientId, prescriptionId)
+    setResumable(null)
+  }, [patientId, prescriptionId])
+
+  // Look for a resumable session once on mount.
+  useEffect(() => {
+    let cancelled = false
+    void findResumableSession(patientId, prescriptionId).then((r) => {
+      if (cancelled || !r) return
+      setResumable({ sessionId: r.sessionId, startedAtMs: r.startedAtMs })
+    })
+    return () => { cancelled = true }
+  }, [patientId, prescriptionId])
 
   // If the patient closes the tab mid-session, mark abandoned so the data
   // doesn't sit in IndexedDB forever as 'in_progress'.
@@ -280,10 +344,47 @@ export default function SessionRunClient({
   const { phase } = snap
   const isActive = phase === 'ACTIVE' || phase === 'READY'
 
+  const handleCameraRetry = useCallback(() => {
+    setCameraError(null)
+    setCameraRetryKey((k) => k + 1)
+  }, [])
+
   return (
     <div className="fixed inset-0 bg-black overflow-hidden select-none">
-      {/* Camera — always in background */}
-      <CameraStickman className="absolute inset-0" onPose={handlePose} />
+      {/* Camera — always in background. `key` lets us tear down + remount on retry. */}
+      <CameraStickman
+        key={cameraRetryKey}
+        className="absolute inset-0"
+        onPose={handlePose}
+        onCameraError={(kind, message) => setCameraError({ kind, message })}
+      />
+
+      {/* Camera error blocker — full screen because no camera means no session. */}
+      {cameraError && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/90 px-6 text-center">
+          <p className="text-4xl">📷</p>
+          <p className="text-2xl font-bold text-white">
+            {cameraError.kind === 'denied'
+              ? 'Camera permission denied'
+              : cameraError.kind === 'unavailable'
+                ? 'No camera detected'
+                : 'Camera error'}
+          </p>
+          <p className="max-w-sm text-sm text-slate-300">
+            {cameraError.kind === 'denied'
+              ? 'Open browser settings, allow camera access for this site, then tap Retry.'
+              : cameraError.kind === 'unavailable'
+                ? 'Make sure no other app is using the camera, then tap Retry.'
+                : cameraError.message}
+          </p>
+          <button
+            onClick={handleCameraRetry}
+            className="rounded-xl bg-blue-600 px-6 py-3 text-base font-medium text-white hover:bg-blue-500"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Top bar */}
       <div className="absolute top-0 inset-x-0 z-10 flex items-center gap-3 px-4 py-3 bg-gradient-to-b from-black/80 to-transparent">
@@ -334,7 +435,38 @@ export default function SessionRunClient({
 
       {/* ── State overlays ── */}
 
-      {phase === 'IDLE' && (
+      {phase === 'IDLE' && resumable && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-black/75 px-6">
+          <p className="text-3xl">↺</p>
+          <p className="text-white text-2xl font-bold text-center">Resume previous session?</p>
+          <p className="text-slate-300 text-sm text-center max-w-xs">
+            We found an unfinished session from{' '}
+            {new Date(resumable.startedAtMs).toLocaleString('en-SG', {
+              hour: '2-digit',
+              minute: '2-digit',
+              day: 'numeric',
+              month: 'short',
+            })}
+            . Continue where you left off, or discard and start fresh.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={handleResume}
+              className="px-6 py-3 rounded-xl bg-blue-600 text-white text-base font-semibold hover:bg-blue-500"
+            >
+              Resume
+            </button>
+            <button
+              onClick={handleDiscardResumable}
+              className="px-6 py-3 rounded-xl bg-slate-700 text-slate-200 text-base font-medium hover:bg-slate-600"
+            >
+              Discard
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase === 'IDLE' && !resumable && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-6 bg-black/65">
           <div className="text-center px-6">
             <p className="text-white text-2xl font-bold">{snap.set.exerciseName}</p>
@@ -343,12 +475,17 @@ export default function SessionRunClient({
             </p>
           </div>
           {h10Status !== 'connected' && h10Status !== 'reconnecting' && (
-            <button
-              onClick={handleConnectH10}
-              className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-medium text-sm hover:bg-blue-500"
-            >
-              Connect H10 (optional)
-            </button>
+            <div className="flex flex-col items-center gap-2">
+              <button
+                onClick={handleConnectH10}
+                className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-medium text-sm hover:bg-blue-500"
+              >
+                Connect H10 (optional)
+              </button>
+              {h10Error && (
+                <p className="max-w-xs px-3 text-center text-xs text-amber-300">{h10Error}</p>
+              )}
+            </div>
           )}
           <button
             onClick={handleStart}
@@ -367,6 +504,21 @@ export default function SessionRunClient({
             <p className="text-white text-8xl font-bold mt-1 tabular-nums">
               {snap.countdownSecondsLeft || 1}
             </p>
+            {/* Coaching message + in-frame progress bar; visible once countdown
+                hits zero but the body isn't yet sustained in view. */}
+            {snap.countdownSecondsLeft === 0 && snap.inFrameProgress < 1 && (
+              <>
+                <p className="mt-4 text-amber-300 text-base font-medium">
+                  Step fully into the frame
+                </p>
+                <div className="mx-auto mt-2 h-1.5 w-40 overflow-hidden rounded-full bg-slate-700">
+                  <div
+                    className="h-full rounded-full bg-amber-300 transition-all"
+                    style={{ width: `${Math.round(snap.inFrameProgress * 100)}%` }}
+                  />
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

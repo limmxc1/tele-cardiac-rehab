@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'
 import { useAuthStore } from '@/lib/store/auth'
+import BrowserSupportBanner from '@/components/patient/BrowserSupportBanner'
 
 export default function PatientLayout({ children }: { children: React.ReactNode }) {
   const setUser = useAuthStore((s) => s.setUser)
@@ -15,5 +16,10 @@ export default function PatientLayout({ children }: { children: React.ReactNode 
     } catch {}
   }, [setUser])
 
-  return <>{children}</>
+  return (
+    <>
+      <BrowserSupportBanner />
+      {children}
+    </>
+  )
 }

@@ -59,10 +59,11 @@ interface Props {
   onPersonCount?: (count: number) => void
   onWorkerStatus?: (status: 'loading' | 'ready' | 'error') => void
   onPose?: (poses: NormalizedLandmark[][], timestamp_ms: number) => void
+  onCameraError?: (kind: 'denied' | 'unavailable' | 'unknown', message: string) => void
   className?: string
 }
 
-export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, className }: Props) {
+export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, onCameraError, className }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
@@ -74,10 +75,10 @@ export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, 
   // Latest callback props are stashed in a ref so the rAF/worker loop sees
   // current handlers without depending on them (which would tear the worker
   // down whenever the parent passes a new inline function).
-  const cbRef = useRef({ onPersonCount, onWorkerStatus, onPose })
+  const cbRef = useRef({ onPersonCount, onWorkerStatus, onPose, onCameraError })
   useEffect(() => {
-    cbRef.current = { onPersonCount, onWorkerStatus, onPose }
-  }, [onPersonCount, onWorkerStatus, onPose])
+    cbRef.current = { onPersonCount, onWorkerStatus, onPose, onCameraError }
+  }, [onPersonCount, onWorkerStatus, onPose, onCameraError])
 
   useEffect(() => {
     let cancelled = false
@@ -149,8 +150,17 @@ export default function CameraStickman({ onPersonCount, onWorkerStatus, onPose, 
         videoRef.current.play().catch(() => {})
       }
       rafRef.current = requestAnimationFrame(sendFrame)
-    }).catch((err) => {
+    }).catch((err: unknown) => {
       console.error('[CameraStickman] camera error:', err)
+      const name = err instanceof DOMException ? err.name : ''
+      const kind: 'denied' | 'unavailable' | 'unknown' =
+        name === 'NotAllowedError' || name === 'SecurityError'
+          ? 'denied'
+          : name === 'NotFoundError' || name === 'OverconstrainedError'
+            ? 'unavailable'
+            : 'unknown'
+      const message = err instanceof Error ? err.message : String(err)
+      cbRef.current.onCameraError?.(kind, message)
     })
 
     return () => {
