@@ -1,15 +1,26 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import StickmanCanvas from './StickmanCanvas'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import StickmanCanvas, { resolveFrame } from './StickmanCanvas'
 import HRTimeline from './HRTimeline'
 import SyncedScrubber from './SyncedScrubber'
 import RepTable from './RepTable'
 import NotesEditor from './NotesEditor'
-import type { PlaybackBundle } from '@/lib/playback/loader'
+import JointAngleReadout from './JointAngleReadout'
+import type { PlaybackBundle, PlaybackSet } from '@/lib/playback/loader'
 
 interface Props {
   bundle: PlaybackBundle
+}
+
+function pickActiveSet(sets: PlaybackSet[], tMs: number): PlaybackSet | null {
+  if (sets.length === 0) return null
+  let candidate: PlaybackSet | null = null
+  for (const s of sets) {
+    if (s.startedTMs <= tMs) candidate = s
+    else break
+  }
+  return candidate ?? sets[0]
 }
 
 export default function PlaybackClient({ bundle }: Props) {
@@ -19,7 +30,6 @@ export default function PlaybackClient({ bundle }: Props) {
   const rafRef = useRef<number | null>(null)
   const lastTickRef = useRef<number | null>(null)
 
-  // Drive playback time off rAF when playing.
   useEffect(() => {
     if (!isPlaying) return
     let cancelled = false
@@ -51,7 +61,6 @@ export default function PlaybackClient({ bundle }: Props) {
 
   const togglePlay = () => {
     setIsPlaying((p) => {
-      // If at end and pressing play, restart from 0.
       if (!p && currentTMs >= bundle.durationMs) setCurrentTMs(0)
       return !p
     })
@@ -61,7 +70,6 @@ export default function PlaybackClient({ bundle }: Props) {
     setCurrentTMs(Math.max(0, Math.min(bundle.durationMs, tMs)))
   }
 
-  // Find current rep / exercise label.
   const liveCounts = (() => {
     let repsDone = 0
     let activeExercise: string | null = null
@@ -75,6 +83,17 @@ export default function PlaybackClient({ bundle }: Props) {
     }
     return { repsDone, activeExercise, activeSet }
   })()
+
+  // Interpolated landmark frame at current scrub position — feeds both
+  // the stickman canvas (visually) and the joint-angle readout (numerically).
+  const frame = useMemo(
+    () => resolveFrame(bundle.poses, currentTMs),
+    [bundle.poses, currentTMs],
+  )
+  const activeSet = useMemo(
+    () => pickActiveSet(bundle.sets, currentTMs),
+    [bundle.sets, currentTMs],
+  )
 
   return (
     <div className="space-y-4">
@@ -116,19 +135,39 @@ export default function PlaybackClient({ bundle }: Props) {
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between px-4 py-2 text-xs text-slate-500">
-            <span>Heart rate</span>
-            <span>Limit {bundle.hrUpperLimitBpm} bpm</span>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between px-4 pt-3 text-xs text-slate-500">
+              <span>Heart rate</span>
+              <span>Limit {bundle.hrUpperLimitBpm} bpm</span>
+            </div>
+            <div className="h-72 w-full">
+              <HRTimeline
+                hr={bundle.hr}
+                currentTMs={currentTMs}
+                durationMs={bundle.durationMs}
+                hrUpperLimit={bundle.hrUpperLimitBpm}
+              />
+            </div>
           </div>
-          <div className="h-72 w-full px-2 pb-2">
-            <HRTimeline
-              hr={bundle.hr}
-              currentTMs={currentTMs}
-              durationMs={bundle.durationMs}
-              hrUpperLimit={bundle.hrUpperLimitBpm}
+
+          {activeSet ? (
+            <JointAngleReadout
+              landmarks={frame}
+              primaryJoint={activeSet.primaryJoint}
+              primarySide={activeSet.primarySide}
+              primaryStartMin={activeSet.startAngleMin}
+              primaryStartMax={activeSet.startAngleMax}
+              primaryEndMin={activeSet.endAngleMin}
+              primaryEndMax={activeSet.endAngleMax}
+              secondaryJoint={activeSet.secondaryJoint}
+              secondarySide={activeSet.secondarySide}
             />
-          </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-400 shadow-sm">
+              No exercise context for this segment.
+            </div>
+          )}
         </div>
       </div>
 

@@ -100,8 +100,9 @@ class SessionBufferDB extends Dexie {
 
 export const bufferDB = new SessionBufferDB()
 
-// Pose downsampling: 10fps target → minimum 100ms gap between accepted frames per session.
-const POSE_TARGET_INTERVAL_MS = 100
+// Pose downsampling: 5fps target → minimum 200ms gap between accepted frames per session.
+// 5fps is plenty for stickman replay + slider scrubbing and halves storage vs 10fps.
+const POSE_TARGET_INTERVAL_MS = 200
 const lastAcceptedPoseTs = new Map<string, number>()
 
 export function resetPoseDownsampler(sessionId: string): void {

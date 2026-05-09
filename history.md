@@ -239,3 +239,26 @@ The full-screen camera was visually overwhelming for elderly patients on a table
 - **State overlays** (IDLE / READY / PAUSED / SET_COMPLETE / RESTING / SESSION_COMPLETE) and the camera-error blocker remain full-viewport `absolute inset-0` modals on top of the columns.
 
 **Key files:** `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `components/patient/LiveStickman.tsx`
+
+---
+
+## Patch — Playback HR readout, lower pose FPS, live joint angles, secondary joint focus
+
+Three connected enhancements:
+
+### 1. HR display in clinician playback
+The `HRTimeline` already drew a Recharts line, but the cursor's HR value wasn't legible at a glance. Added a header inside the panel showing `HR @ mm:ss` and the current bpm at the scrubber position (red when above the prescription's upper limit), plus a sample-count chip. Auto-scaling Y-min so flat low-HR sessions don't render as a hairline at the bottom edge. The "no HR data" placeholder now hints at H10 pairing as the likely cause.
+
+### 2. Lower pose FPS to halve storage
+`POSE_TARGET_INTERVAL_MS` in `lib/buffer/sessionBuffer.ts` raised from 100ms → 200ms (10fps → 5fps). Stickman replay and scrubbing remain smooth (canvas redraws at scrub rAF cadence regardless of source fps; landmark interpolation already handles gaps). Direct halving of pose row volume in IndexedDB and `session_pose_frames`.
+
+### 3. Live primary + secondary joint angles during scrubbing
+- **Loader**: `loadPlaybackBundle` now joins `exercises` for each `session_set` and includes `primaryJoint`, `primarySide`, `secondaryJoint`, and the four start/end angle thresholds in `PlaybackSet`. Secondary side reuses primary side (we don't store a separate column).
+- **StickmanCanvas**: extracted `resolveFrame(poses, currentTMs)` so both the canvas drawing path and external code share the same lerped landmarks frame at the current scrub position. Avoids drift between visual stickman and computed angle.
+- **JointAngleReadout** (new): receives the resolved frame + the active set's joint config and renders large primary/secondary angle values with start/end-zone classification. Computes both angles from the same interpolated frame so they update live as the user drags the scrubber.
+- **PlaybackClient**: picks the active `PlaybackSet` based on `startedTMs <= currentTMs` and feeds the readout. Lays out as a right-column stack: HR panel on top, joint readout below, stickman in the left column.
+
+### 4. Secondary joint focus in exercise creation
+DB columns (`secondary_joint`, `secondary_start_min/max`, `secondary_end_min/max`) were already in `0002_exercises.sql` but unused by the form. Added an "Enable" toggle in `NewExerciseClient` that reveals a joint dropdown (side reuses the primary side per `lib/pose/repDetector.ts` semantics) and four threshold sliders for start/end zones. The demo overlay's HUD now shows both angles side-by-side when secondary is enabled, so the clinician can verify both joints reach their target zones before saving. `ExercisePayload` and `createExerciseAction` extended with the five nullable secondary fields; null = "primary only" (existing behavior).
+
+**Key files:** `lib/buffer/sessionBuffer.ts`, `lib/playback/loader.ts`, `components/playback/StickmanCanvas.tsx`, `components/playback/HRTimeline.tsx`, `components/playback/JointAngleReadout.tsx`, `components/playback/PlaybackClient.tsx`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `app/actions/exercises.ts`

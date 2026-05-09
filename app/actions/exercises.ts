@@ -14,6 +14,11 @@ export interface ExercisePayload {
   end_angle_min: number
   end_angle_max: number
   direction: string
+  secondary_joint: string | null
+  secondary_start_min: number | null
+  secondary_start_max: number | null
+  secondary_end_min: number | null
+  secondary_end_max: number | null
   created_by: string | null
 }
 
@@ -31,6 +36,11 @@ export async function createExerciseAction(
     end_angle_min: data.end_angle_min,
     end_angle_max: data.end_angle_max,
     direction: data.direction,
+    secondary_joint: data.secondary_joint,
+    secondary_start_min: data.secondary_start_min,
+    secondary_start_max: data.secondary_start_max,
+    secondary_end_min: data.secondary_end_min,
+    secondary_end_max: data.secondary_end_max,
     created_by: data.created_by,
   })
 

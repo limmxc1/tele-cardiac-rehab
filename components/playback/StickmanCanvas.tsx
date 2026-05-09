@@ -30,6 +30,26 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t
 }
 
+/**
+ * Resolve the interpolated landmark frame at `currentTMs`. Same math as the
+ * canvas drawing path so on-screen pose and computed angles stay in sync.
+ */
+export function resolveFrame(
+  poses: PlaybackPose[],
+  currentTMs: number,
+): [number, number, number][] | null {
+  if (poses.length === 0) return null
+  const i = findFrameIndex(poses, currentTMs)
+  const a = poses[i]
+  const b = poses[Math.min(i + 1, poses.length - 1)]
+  const span = b.tMs - a.tMs
+  const t = span > 0 ? Math.min(1, Math.max(0, (currentTMs - a.tMs) / span)) : 0
+  return a.lm.map((p, idx) => {
+    const q = b.lm[idx] ?? p
+    return [lerp(p[0], q[0], t), lerp(p[1], q[1], t), lerp(p[2], q[2], t)]
+  })
+}
+
 interface Props {
   poses: PlaybackPose[]
   currentTMs: number
@@ -50,7 +70,6 @@ export default function StickmanCanvas({ poses, currentTMs, className }: Props) 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Match canvas backing store to its CSS box (DPR-aware).
     const rect = canvas.getBoundingClientRect()
     const dpr = window.devicePixelRatio || 1
     const w = Math.round(rect.width * dpr)
@@ -71,24 +90,13 @@ export default function StickmanCanvas({ poses, currentTMs, className }: Props) 
       return
     }
 
-    const i = findFrameIndex(poses, currentTMs)
-    const a = poses[i]
-    const b = poses[Math.min(i + 1, poses.length - 1)]
-    const span = b.tMs - a.tMs
-    const t = span > 0 ? Math.min(1, Math.max(0, (currentTMs - a.tMs) / span)) : 0
+    const lm = resolveFrame(poses, currentTMs)
+    if (!lm) return
 
-    const lm = a.lm.map((p, idx) => {
-      const q = b.lm[idx] ?? p
-      return [lerp(p[0], q[0], t), lerp(p[1], q[1], t), lerp(p[2], q[2], t)] as [number, number, number]
-    })
-
-    // Project normalized [0,1] coords into a centered fit box.
     const pad = 16 * dpr
     const fitW = canvas.width - pad * 2
     const fitH = canvas.height - pad * 2
     const aspect = fitW / fitH
-    // MediaPipe normalizes to image space; we don't know the original aspect.
-    // Assume 4:3 (640×480 capture in CameraStickman) and letterbox.
     const srcAspect = 4 / 3
     let drawW = fitW
     let drawH = fitH

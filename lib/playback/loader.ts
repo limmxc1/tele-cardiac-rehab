@@ -41,6 +41,14 @@ export type PlaybackSet = {
   repsCompleted: number
   repsTarget: number
   endedReason: string | null
+  primaryJoint: string
+  primarySide: 'left' | 'right' | 'both'
+  secondaryJoint: string | null
+  secondarySide: 'left' | 'right' | 'both' | null
+  startAngleMin: number
+  startAngleMax: number
+  endAngleMin: number
+  endAngleMax: number
 }
 
 export type PlaybackBundle = {
@@ -80,7 +88,11 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
   const [setsRes, repsRes, pausesRes, hrRes, poseRes] = await Promise.all([
     supabaseServer
       .from('session_sets')
-      .select('id, set_number, exercise_id, started_at, completed_at, reps_completed, reps_target, ended_reason, exercises:exercise_id ( name )')
+      .select(
+        'id, set_number, exercise_id, started_at, completed_at, reps_completed, reps_target, ended_reason, ' +
+        'exercises:exercise_id ( name, primary_joint, primary_side, secondary_joint, ' +
+        'start_angle_min, start_angle_max, end_angle_min, end_angle_max )',
+      )
       .eq('session_id', sessionId)
       .order('set_number', { ascending: true }),
     supabaseServer
@@ -105,6 +117,16 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
       .order('second_offset', { ascending: true }),
   ])
 
+  type ExerciseJoin = {
+    name: string
+    primary_joint: string
+    primary_side: string
+    secondary_joint: string | null
+    start_angle_min: number
+    start_angle_max: number
+    end_angle_min: number
+    end_angle_max: number
+  }
   type SetRow = {
     id: string
     set_number: number
@@ -114,9 +136,9 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
     reps_completed: number
     reps_target: number
     ended_reason: string | null
-    exercises: { name: string } | { name: string }[] | null
+    exercises: ExerciseJoin | ExerciseJoin[] | null
   }
-  const sets: PlaybackSet[] = ((setsRes.data ?? []) as SetRow[]).map((s) => {
+  const sets: PlaybackSet[] = ((setsRes.data ?? []) as unknown as SetRow[]).map((s) => {
     const ex = Array.isArray(s.exercises) ? s.exercises[0] : s.exercises
     return {
       id: s.id,
@@ -128,6 +150,15 @@ export async function loadPlaybackBundle(sessionId: string): Promise<PlaybackBun
       repsCompleted: s.reps_completed,
       repsTarget: s.reps_target,
       endedReason: s.ended_reason,
+      primaryJoint: ex?.primary_joint ?? 'knee',
+      primarySide: (ex?.primary_side ?? 'both') as 'left' | 'right' | 'both',
+      secondaryJoint: ex?.secondary_joint ?? null,
+      // We don't store a separate side for the secondary joint; reuse primary side.
+      secondarySide: ex?.secondary_joint ? ((ex?.primary_side ?? 'both') as 'left' | 'right' | 'both') : null,
+      startAngleMin: Number(ex?.start_angle_min ?? 0),
+      startAngleMax: Number(ex?.start_angle_max ?? 0),
+      endAngleMin: Number(ex?.end_angle_min ?? 0),
+      endAngleMax: Number(ex?.end_angle_max ?? 0),
     }
   })
 

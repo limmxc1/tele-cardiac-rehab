@@ -41,9 +41,18 @@ export default function NewExerciseClient() {
   const [endMin, setEndMin] = useState(155)
   const [endMax, setEndMax] = useState(175)
 
+  // Secondary joint (optional co-constraint)
+  const [secondaryEnabled, setSecondaryEnabled] = useState(false)
+  const [secondaryJoint, setSecondaryJoint] = useState<Joint>('hip')
+  const [secondaryStartMin, setSecondaryStartMin] = useState(80)
+  const [secondaryStartMax, setSecondaryStartMax] = useState(100)
+  const [secondaryEndMin, setSecondaryEndMin] = useState(150)
+  const [secondaryEndMax, setSecondaryEndMax] = useState(180)
+
   // Demo state
   const [demoStatus, setDemoStatus] = useState<DemoStatus>('idle')
   const [currentAngle, setCurrentAngle] = useState<number | null>(null)
+  const [secondaryCurrentAngle, setSecondaryCurrentAngle] = useState<number | null>(null)
   const [histogramData, setHistogramData] = useState<number[]>(Array(BUCKETS).fill(0))
   const [totalSamples, setTotalSamples] = useState(0)
 
@@ -60,10 +69,14 @@ export default function NewExerciseClient() {
   const runningRef = useRef(false)
   const jointRef = useRef(joint)
   const sideRef = useRef(side)
+  const secondaryJointRef = useRef(secondaryJoint)
+  const secondaryEnabledRef = useRef(secondaryEnabled)
 
   // Keep refs in sync so the rAF closure always reads the current joint/side
   useEffect(() => { jointRef.current = joint }, [joint])
   useEffect(() => { sideRef.current = side }, [side])
+  useEffect(() => { secondaryJointRef.current = secondaryJoint }, [secondaryJoint])
+  useEffect(() => { secondaryEnabledRef.current = secondaryEnabled }, [secondaryEnabled])
 
   const stopDemo = useCallback(() => {
     runningRef.current = false
@@ -104,6 +117,7 @@ export default function NewExerciseClient() {
     setHistogramData(Array(BUCKETS).fill(0))
     setTotalSamples(0)
     setCurrentAngle(null)
+    setSecondaryCurrentAngle(null)
 
     try {
       const { PoseLandmarker, FilesetResolver, DrawingUtils } =
@@ -179,6 +193,11 @@ export default function NewExerciseClient() {
                 setTotalSamples(angleHistoryRef.current.length)
               }
             }
+
+            if (secondaryEnabledRef.current) {
+              const sec = getJointAngle(lms, secondaryJointRef.current, sideRef.current)
+              setSecondaryCurrentAngle(sec === null ? null : Math.round(sec))
+            }
           }
         }
 
@@ -243,6 +262,11 @@ export default function NewExerciseClient() {
         end_angle_min: endMin,
         end_angle_max: endMax,
         direction,
+        secondary_joint: secondaryEnabled ? secondaryJoint : null,
+        secondary_start_min: secondaryEnabled ? secondaryStartMin : null,
+        secondary_start_max: secondaryEnabled ? secondaryStartMax : null,
+        secondary_end_min: secondaryEnabled ? secondaryEndMin : null,
+        secondary_end_max: secondaryEnabled ? secondaryEndMax : null,
         created_by: user?.id ?? null,
       })
 
@@ -396,8 +420,23 @@ export default function NewExerciseClient() {
                     style={{ maxHeight: 360 }}
                   />
                   {currentAngle !== null && (
-                    <div className="absolute left-1/2 top-3 -translate-x-1/2 rounded-xl bg-black/60 px-5 py-2 text-4xl font-bold tabular-nums text-white">
-                      {currentAngle}°
+                    <div className="absolute left-1/2 top-3 -translate-x-1/2 flex items-center gap-3 rounded-xl bg-black/60 px-5 py-2 text-white">
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-[10px] uppercase tracking-wide text-slate-300">
+                          {joint}
+                        </span>
+                        <span className="text-3xl font-bold tabular-nums">{currentAngle}°</span>
+                      </div>
+                      {secondaryEnabled && (
+                        <div className="flex items-baseline gap-1 border-l border-white/30 pl-3">
+                          <span className="text-[10px] uppercase tracking-wide text-slate-300">
+                            {secondaryJoint}
+                          </span>
+                          <span className="text-3xl font-bold tabular-nums">
+                            {secondaryCurrentAngle ?? '—'}°
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                   <button
@@ -495,6 +534,85 @@ export default function NewExerciseClient() {
               onChange={(v) => setEndMax(Math.max(v, endMin + 1))}
             />
           </div>
+        </section>
+
+        {/* Secondary joint co-constraint */}
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-semibold text-slate-800">Secondary Joint Focus</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Optional. Both joints must be in their target zones for a rep to count
+                (e.g. squat: knee + hip).
+              </p>
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={secondaryEnabled}
+                onChange={(e) => setSecondaryEnabled(e.target.checked)}
+                className="h-4 w-4 accent-blue-600"
+              />
+              <span className={secondaryEnabled ? 'text-slate-700' : 'text-slate-400'}>
+                Enable
+              </span>
+            </label>
+          </div>
+
+          {secondaryEnabled && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="block text-sm font-medium text-slate-700">Secondary Joint</label>
+                <select
+                  value={secondaryJoint}
+                  disabled={demoStatus === 'running'}
+                  onChange={(e) => setSecondaryJoint(e.target.value as Joint)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-slate-800 outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  <option value="knee">Knee</option>
+                  <option value="hip">Hip</option>
+                  <option value="shoulder">Shoulder</option>
+                  <option value="elbow">Elbow</option>
+                  <option value="ankle">Ankle</option>
+                </select>
+                <p className="text-[11px] text-slate-400">
+                  Side reuses the primary side ({side}).
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-blue-600">
+                  Secondary start position
+                </p>
+                <SliderRow
+                  label="Min"
+                  value={secondaryStartMin}
+                  onChange={(v) => setSecondaryStartMin(Math.min(v, secondaryStartMax - 1))}
+                />
+                <SliderRow
+                  label="Max"
+                  value={secondaryStartMax}
+                  onChange={(v) => setSecondaryStartMax(Math.max(v, secondaryStartMin + 1))}
+                />
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-red-500">
+                  Secondary end position
+                </p>
+                <SliderRow
+                  label="Min"
+                  value={secondaryEndMin}
+                  onChange={(v) => setSecondaryEndMin(Math.min(v, secondaryEndMax - 1))}
+                />
+                <SliderRow
+                  label="Max"
+                  value={secondaryEndMax}
+                  onChange={(v) => setSecondaryEndMax(Math.max(v, secondaryEndMin + 1))}
+                />
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Direction */}
