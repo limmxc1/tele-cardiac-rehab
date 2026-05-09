@@ -119,12 +119,20 @@ export default async function PatientDetailPage({
             <p className="text-xs text-slate-400">{patient.username}</p>
           </div>
         </div>
-        <Link
-          href={`/clinician/prescribe/${id}`}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-        >
-          + Prescribe Routine
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/clinician/patients/${id}/edit?name=${encodeURIComponent(patient.display_name)}&username=${encodeURIComponent(patient.username)}`}
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            Edit Patient
+          </Link>
+          <Link
+            href={`/clinician/prescribe/${id}`}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            + Prescribe Routine
+          </Link>
+        </div>
       </header>
 
       <main className="p-6 space-y-6">

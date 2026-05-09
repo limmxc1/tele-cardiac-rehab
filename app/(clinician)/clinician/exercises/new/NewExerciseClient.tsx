@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/store/auth'
 import { createExerciseAction, updateExerciseAction } from '@/app/actions/exercises'
 import { getJointAngle } from '@/lib/pose/angles'
+import { detectOrientation } from '@/lib/pose/orientationDetector'
 
 type Joint = 'knee' | 'hip' | 'shoulder' | 'elbow' | 'ankle'
 type Side = 'left' | 'right' | 'both'

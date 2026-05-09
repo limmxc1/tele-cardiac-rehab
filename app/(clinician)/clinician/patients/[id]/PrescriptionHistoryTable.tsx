@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import Link from 'next/link'
 import { bulkDeletePrescriptionsAction } from '@/app/actions/prescriptions'
 import DeletePrescriptionButton from './DeletePrescriptionButton'
 
@@ -152,7 +153,15 @@ export default function PrescriptionHistoryTable({
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <DeletePrescriptionButton prescriptionId={p.id} patientId={patientId} />
+                  <div className="flex items-center justify-end gap-1">
+                    <Link
+                      href={`/clinician/patients/${patientId}/prescriptions/${p.id}/edit`}
+                      className="rounded-md px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                    >
+                      Edit
+                    </Link>
+                    <DeletePrescriptionButton prescriptionId={p.id} patientId={patientId} />
+                  </div>
                 </td>
               </tr>
             ))}

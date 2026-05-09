@@ -105,6 +105,58 @@ export interface PrescriptionPayload {
   items: PrescriptionItemInput[]
 }
 
+export async function updatePrescriptionAction(args: {
+  prescriptionId: string
+  patientId: string
+  scheduledDate: string
+  hrUpperLimitBpm: number
+  items: PrescriptionItemInput[]
+}): Promise<{ ok: false; error: string } | { ok: true }> {
+  // Block if sessions exist (same guard as delete).
+  const { count: sessionCount, error: sessErr } = await supabaseServer
+    .from('sessions')
+    .select('*', { count: 'exact', head: true })
+    .eq('prescription_id', args.prescriptionId)
+  if (sessErr) return { ok: false, error: sessErr.message }
+  if ((sessionCount ?? 0) > 0)
+    return { ok: false, error: 'Cannot edit: this routine already has session history.' }
+
+  // Update the prescription header.
+  const { error: updateErr } = await supabaseServer
+    .from('prescriptions')
+    .update({ scheduled_date: args.scheduledDate, hr_upper_limit_bpm: args.hrUpperLimitBpm })
+    .eq('id', args.prescriptionId)
+    .eq('patient_id', args.patientId)
+  if (updateErr) return { ok: false, error: updateErr.message }
+
+  // Replace all items.
+  const { error: delErr } = await supabaseServer
+    .from('prescription_items')
+    .delete()
+    .eq('prescription_id', args.prescriptionId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  if (args.items.length > 0) {
+    const rows = args.items.map((item, i) => ({
+      prescription_id: args.prescriptionId,
+      exercise_id: item.exercise_id,
+      sequence_order: i + 1,
+      num_sets: item.num_sets,
+      reps_per_set: item.reps_per_set,
+      rest_seconds: item.rest_seconds,
+      override_start_angle_min: item.override_start_angle_min,
+      override_start_angle_max: item.override_start_angle_max,
+      override_end_angle_min: item.override_end_angle_min,
+      override_end_angle_max: item.override_end_angle_max,
+    }))
+    const { error: insertErr } = await supabaseServer.from('prescription_items').insert(rows)
+    if (insertErr) return { ok: false, error: insertErr.message }
+  }
+
+  revalidatePath(`/clinician/patients/${args.patientId}`)
+  redirect(`/clinician/patients/${args.patientId}`)
+}
+
 export async function createPrescriptionAction(
   data: PrescriptionPayload
 ): Promise<{ error: string } | null> {
