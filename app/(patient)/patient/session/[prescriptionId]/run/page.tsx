@@ -16,7 +16,7 @@ export default async function SessionRunPage({
 
   const { data: presc } = await supabaseServer
     .from('prescriptions')
-    .select('id, hr_upper_limit_bpm')
+    .select('id, hr_upper_limit_bpm, patient_id')
     .eq('id', prescriptionId)
     .single()
 
@@ -25,7 +25,7 @@ export default async function SessionRunPage({
   const { data: itemRows } = await supabaseServer
     .from('prescription_items')
     .select(`
-      id, sequence_order, num_sets, reps_per_set, rest_seconds,
+      id, sequence_order, num_sets, reps_per_set, rest_seconds, exercise_id,
       override_start_angle_min, override_start_angle_max,
       override_end_angle_min, override_end_angle_max,
       exercises (
@@ -86,6 +86,7 @@ export default async function SessionRunPage({
       const isLastSet = ii === totalItems - 1 && isLastSetOfItem
       sets.push({
         prescriptionItemId: item.id,
+        exerciseId: item.exercise_id,
         itemIndex: ii,
         setNumber: sn,
         totalSets: item.num_sets,
@@ -116,6 +117,7 @@ export default async function SessionRunPage({
   return (
     <SessionRunClient
       prescriptionId={prescriptionId}
+      patientId={presc.patient_id}
       hrLimit={presc.hr_upper_limit_bpm}
       sets={sets}
       startSetIdx={startSetIdx}

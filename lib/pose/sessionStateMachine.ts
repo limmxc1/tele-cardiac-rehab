@@ -15,6 +15,7 @@ export type SessionPhase =
 
 export interface SetEntry {
   prescriptionItemId: string
+  exerciseId: string
   itemIndex: number
   setNumber: number    // 1-based
   totalSets: number
@@ -26,6 +27,23 @@ export interface SetEntry {
   isLastSetOfItem: boolean
   isLastSet: boolean
   nextExerciseName: string | null
+}
+
+export type SetEndReason = 'reps_complete' | 't_pose' | 'abandoned'
+
+export interface SessionEvents {
+  onSetStart?: (e: { setIdx: number; set: SetEntry; ts_ms: number }) => void
+  onSetEnd?: (e: {
+    setIdx: number
+    set: SetEntry
+    ts_ms: number
+    reason: SetEndReason
+    repsCompleted: number
+  }) => void
+  onRepComplete?: (e: { setIdx: number; repNumber: number; rep: RepEvent }) => void
+  onPauseStart?: (e: { reason: PauseReason; ts_ms: number }) => void
+  onPauseEnd?: (e: { ts_ms: number }) => void
+  onSessionEnd?: (e: { ts_ms: number }) => void
 }
 
 export interface SessionSnapshot {
@@ -70,6 +88,7 @@ export class SessionStateMachine {
     startSetIdx: number,
     private readonly hrLimit: number,
     private readonly onChange: (snap: SessionSnapshot) => void,
+    private readonly events: SessionEvents = {},
   ) {
     this.setIdx = startSetIdx
     this.tposeDetector = new TPoseDetector(() => this.onTPoseDetected())
@@ -183,18 +202,24 @@ export class SessionStateMachine {
   }
 
   private enterActive(): void {
+    const wasReady = this.phase === 'READY'
     this.phase = 'ACTIVE'
     this.hrBreachStart = null
     this.outOfFrameStart = null
     this.multiPersonStart = null
     this.repDetector = new RepDetector(this.cur.repConfig, (ev) => this.onRepComplete(ev))
     this.tposeDetector.reset()
+    // Only fire onSetStart when transitioning from READY (not from PAUSED → ACTIVE).
+    if (wasReady) {
+      this.events.onSetStart?.({ setIdx: this.setIdx, set: this.cur, ts_ms: performance.now() })
+    }
   }
 
   private onRepComplete(ev: RepEvent): void {
     this.repsCompleted++
     this.completedReps = [...this.completedReps, ev]
     repCue()
+    this.events.onRepComplete?.({ setIdx: this.setIdx, repNumber: this.repsCompleted, rep: ev })
     if (this.repsCompleted >= this.cur.repsTarget) {
       this.enterSetComplete('reps_complete')
     }
@@ -210,16 +235,25 @@ export class SessionStateMachine {
     }
   }
 
-  private enterSetComplete(_reason: 'reps_complete' | 't_pose'): void {
+  private enterSetComplete(reason: SetEndReason): void {
     this.phase = 'SET_COMPLETE'
     this.repDetector = null
     const done = this.cur
+    const completedAt = performance.now()
+    this.events.onSetEnd?.({
+      setIdx: this.setIdx,
+      set: done,
+      ts_ms: completedAt,
+      reason,
+      repsCompleted: this.repsCompleted,
+    })
 
     if (done.isLastSet) {
       setTimeout(() => {
         if (this.destroyed) return
         this.phase = 'SESSION_COMPLETE'
         sessionCompleteCue()
+        this.events.onSessionEnd?.({ ts_ms: performance.now() })
         this.emit()
       }, 2000)
       return
@@ -270,6 +304,7 @@ export class SessionStateMachine {
     this.clearRestTimer()
     pauseCue(reason)
     if (reason === 'hr_breach') resumeReadyCue()
+    this.events.onPauseStart?.({ reason, ts_ms: performance.now() })
   }
 
   private resumeFromPause(): void {
@@ -280,6 +315,7 @@ export class SessionStateMachine {
     this.multiPersonStart = null
     this.pauseReason = null
     this.tposeDetector.reset()
+    this.events.onPauseEnd?.({ ts_ms: performance.now() })
     this.enterReady()
   }
 

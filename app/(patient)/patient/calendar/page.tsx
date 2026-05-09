@@ -1,5 +1,6 @@
 import { logoutAction } from '@/app/actions/auth'
 import CalendarClient from './CalendarClient'
+import PendingUploadFlusher from '@/components/patient/PendingUploadFlusher'
 
 export default function PatientCalendarPage() {
   return (
@@ -15,6 +16,7 @@ export default function PatientCalendarPage() {
       <main className="p-4">
         <CalendarClient />
       </main>
+      <PendingUploadFlusher />
     </div>
   )
 }

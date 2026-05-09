@@ -8,10 +8,23 @@ import {
   SessionStateMachine,
   type SetEntry,
   type SessionSnapshot,
+  type SessionEvents,
 } from '@/lib/pose/sessionStateMachine'
 import { isMuted, setMuted } from '@/lib/audio/cues'
 import HRRing from '@/components/hr/HRRing'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
+import {
+  startSession,
+  recordHR,
+  recordPoseFrame,
+  recordSetStart,
+  recordSetComplete,
+  recordRep,
+  recordPauseStart,
+  recordPauseEnd,
+  markSessionComplete,
+} from '@/lib/buffer/sessionBuffer'
+import { uploadSession } from '@/lib/sync/uploader'
 
 const CameraStickman = dynamic(() => import('@/components/pose/CameraStickman'), {
   ssr: false,
@@ -24,15 +37,43 @@ const CameraStickman = dynamic(() => import('@/components/pose/CameraStickman'),
 
 interface Props {
   prescriptionId: string
+  patientId: string
   hrLimit: number
   sets: SetEntry[]
   startSetIdx: number
 }
 
-export default function SessionRunClient({ hrLimit, sets, startSetIdx }: Props) {
+type UploadState = 'idle' | 'uploading' | 'uploaded' | 'failed'
+
+export default function SessionRunClient({
+  prescriptionId,
+  patientId,
+  hrLimit,
+  sets,
+  startSetIdx,
+}: Props) {
   const router = useRouter()
   const smRef = useRef<SessionStateMachine | null>(null)
   const h10Ref = useRef<PolarH10 | null>(null)
+
+  // Session/persistence refs.
+  const sessionIdRef = useRef<string | null>(null)
+  const sessionStartPerfRef = useRef<number>(0)
+  const sessionStartWallRef = useRef<number>(0)
+  const setIdsRef = useRef<Map<number, string>>(new Map())
+  const activePauseIdRef = useRef<string | null>(null)
+  const sessionEndedRef = useRef(false)
+  const uploadKickedRef = useRef(false)
+
+  const [uploadState, setUploadState] = useState<UploadState>('idle')
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  const snapPhaseRef = useRef<SessionSnapshot['phase']>('IDLE')
+
+  /** Convert performance.now()-style ms to wall-clock ms using the captured offset. */
+  const toWall = useCallback((perfMs: number) => {
+    return sessionStartWallRef.current + (perfMs - sessionStartPerfRef.current)
+  }, [])
 
   const [snap, setSnap] = useState<SessionSnapshot>(() => ({
     phase: 'IDLE',
@@ -50,25 +91,119 @@ export default function SessionRunClient({ hrLimit, sets, startSetIdx }: Props) 
 
   useEffect(() => { setMutedUI(isMuted()) }, [])
 
+  useEffect(() => { snapPhaseRef.current = snap.phase }, [snap.phase])
+
   useEffect(() => {
-    const sm = new SessionStateMachine(sets, startSetIdx, hrLimit, setSnap)
+    const events: SessionEvents = {
+      onSetStart: ({ setIdx, set, ts_ms }) => {
+        const sessionId = sessionIdRef.current
+        if (!sessionId) return
+        const setId = crypto.randomUUID()
+        setIdsRef.current.set(setIdx, setId)
+        void recordSetStart({
+          setId,
+          sessionId,
+          prescriptionItemId: set.prescriptionItemId,
+          exerciseId: set.exerciseId,
+          setNumber: set.setNumber,
+          repsTarget: set.repsTarget,
+          startedAtMs: toWall(ts_ms),
+        })
+      },
+      onRepComplete: ({ setIdx, repNumber, rep }) => {
+        const sessionId = sessionIdRef.current
+        const setId = setIdsRef.current.get(setIdx)
+        if (!sessionId || !setId) return
+        void recordRep({
+          sessionId,
+          sessionSetId: setId,
+          repNumber,
+          startedAtIso: new Date(toWall(rep.startedAt)).toISOString(),
+          completedAtIso: new Date(toWall(rep.completedAt)).toISOString(),
+          peakAngleDegrees: rep.peakAngleDegrees,
+          romAchievedDegrees: rep.romDegrees,
+          hrBpmAtPeak: rep.hrBpmAtPeak,
+        })
+      },
+      onSetEnd: ({ setIdx, ts_ms, reason, repsCompleted }) => {
+        const setId = setIdsRef.current.get(setIdx)
+        if (!setId) return
+        void recordSetComplete({
+          setId,
+          completedAtMs: toWall(ts_ms),
+          repsCompleted,
+          endedReason: reason,
+        })
+      },
+      onPauseStart: ({ reason, ts_ms }) => {
+        const sessionId = sessionIdRef.current
+        if (!sessionId) return
+        const pauseId = crypto.randomUUID()
+        activePauseIdRef.current = pauseId
+        void recordPauseStart({ pauseId, sessionId, pausedAtMs: toWall(ts_ms), reason })
+      },
+      onPauseEnd: ({ ts_ms }) => {
+        const pauseId = activePauseIdRef.current
+        if (!pauseId) return
+        activePauseIdRef.current = null
+        void recordPauseEnd({ pauseId, resumedAtMs: toWall(ts_ms) })
+      },
+      onSessionEnd: ({ ts_ms }) => {
+        const sessionId = sessionIdRef.current
+        if (!sessionId || sessionEndedRef.current) return
+        sessionEndedRef.current = true
+        void markSessionComplete(sessionId, toWall(ts_ms), 'completed')
+      },
+    }
+    const sm = new SessionStateMachine(sets, startSetIdx, hrLimit, setSnap, events)
     smRef.current = sm
     return () => { sm.destroy(); smRef.current = null }
-  }, [sets, startSetIdx, hrLimit])
+  }, [sets, startSetIdx, hrLimit, toWall])
 
-  // Auto-navigate to calendar 3 seconds after session completes
+  // Kick off upload when SESSION_COMPLETE fires; navigate after it finishes (or fails).
   useEffect(() => {
     if (snap.phase !== 'SESSION_COMPLETE') return
-    const t = setTimeout(() => router.push('/patient/calendar'), 3000)
-    return () => clearTimeout(t)
+    if (uploadKickedRef.current) return
+    uploadKickedRef.current = true
+
+    const sessionId = sessionIdRef.current
+    if (!sessionId) {
+      const t = setTimeout(() => router.push('/patient/calendar'), 3000)
+      return () => clearTimeout(t)
+    }
+
+    setUploadState('uploading')
+    let cancelled = false
+    void (async () => {
+      const result = await uploadSession(sessionId)
+      if (cancelled) return
+      if (result.ok) {
+        setUploadState('uploaded')
+        setTimeout(() => router.push('/patient/calendar'), 1500)
+      } else {
+        setUploadState('failed')
+        setUploadError(result.error)
+        // Buffer keeps the session for next-load orphan flush.
+      }
+    })()
+    return () => { cancelled = true }
   }, [snap.phase, router])
 
   const handlePose = useCallback((poses: NormalizedLandmark[][], timestamp_ms: number) => {
     const sm = smRef.current
     if (!sm) return
     sm.setPersonCount(poses.length, timestamp_ms)
-    if (poses[0]) sm.feedPose(poses[0], timestamp_ms)
-  }, [])
+    const first = poses[0]
+    if (first) {
+      sm.feedPose(first, timestamp_ms)
+      const sessionId = sessionIdRef.current
+      // Only record while ACTIVE — wasted bytes during overlays/idle add up fast.
+      if (sessionId && smRef.current && snapPhaseRef.current === 'ACTIVE') {
+        const wallMs = toWall(timestamp_ms)
+        void recordPoseFrame(sessionId, wallMs, first, sessionStartWallRef.current)
+      }
+    }
+  }, [toWall])
 
   const handleConnectH10 = useCallback(async () => {
     const h10 = new PolarH10()
@@ -77,14 +212,38 @@ export default function SessionRunClient({ hrLimit, sets, startSetIdx }: Props) 
       setH10Status(status)
       smRef.current?.setH10Connected(status === 'connected')
     })
-    h10.onHR((s) => smRef.current?.feedHR(s.hr_bpm, s.timestamp_ms))
+    h10.onHR((s) => {
+      smRef.current?.feedHR(s.hr_bpm, s.timestamp_ms)
+      const sessionId = sessionIdRef.current
+      // s.timestamp_ms is wall-clock from PolarH10 (Date.now()); record verbatim.
+      if (sessionId && Number.isFinite(s.hr_bpm)) {
+        void recordHR(sessionId, s.timestamp_ms, s.hr_bpm)
+      }
+    })
     try { await h10.connect() } catch (err) {
       console.error('[H10]', err)
       h10Ref.current = null
     }
   }, [])
 
-  const handleStart = useCallback(() => smRef.current?.start(), [])
+  const handleStart = useCallback(() => {
+    if (sessionIdRef.current) {
+      smRef.current?.start()
+      return
+    }
+    const sessionId = crypto.randomUUID()
+    const wall = Date.now()
+    const perf = performance.now()
+    sessionIdRef.current = sessionId
+    sessionStartWallRef.current = wall
+    sessionStartPerfRef.current = perf
+    void startSession({
+      sessionId,
+      prescriptionId,
+      patientId,
+      startedAtMs: wall,
+    }).then(() => smRef.current?.start())
+  }, [prescriptionId, patientId])
 
   const handleMuteToggle = useCallback(() => {
     const next = !isMuted()
@@ -223,9 +382,30 @@ export default function SessionRunClient({ hrLimit, sets, startSetIdx }: Props) 
       )}
 
       {phase === 'SESSION_COMPLETE' && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/90">
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/90 px-6">
           <p className="text-green-400 text-4xl font-bold text-center">Session Complete!</p>
-          <p className="text-slate-300 text-base">Well done. Returning to calendar…</p>
+          {uploadState === 'uploading' && (
+            <p className="text-slate-300 text-base">Uploading session data…</p>
+          )}
+          {uploadState === 'uploaded' && (
+            <p className="text-slate-300 text-base">Saved. Returning to calendar…</p>
+          )}
+          {uploadState === 'failed' && (
+            <div className="flex flex-col items-center gap-3 max-w-sm">
+              <p className="text-amber-300 text-sm text-center">
+                Upload failed. Your session is saved on this device and will retry next time you open the app.
+              </p>
+              {uploadError && (
+                <p className="text-slate-500 text-xs text-center break-all">{uploadError}</p>
+              )}
+              <button
+                onClick={() => router.push('/patient/calendar')}
+                className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium"
+              >
+                Return to calendar
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

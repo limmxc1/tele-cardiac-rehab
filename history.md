@@ -134,10 +134,45 @@ Patients exercise at home (Android tablet + Polar H10 chest strap); clinicians r
 
 ---
 
+## Phase 7 — Data persistence (IndexedDB → Supabase)
+
+- **`lib/buffer/sessionBuffer.ts`** — Dexie database `shf-session-buffer` v1
+  - Stores: `sessions`, `hrSamples`, `poseFrames` (keyed by `${sessionId}|${secondOffset}`), `sets`, `reps`, `pauses`
+  - Pose downsampler: gates writes to a 100ms minimum interval per session (10fps target)
+  - Pose frames append into 1-second JSONB buckets via read-modify-write transaction (matches `session_pose_frames.frames` schema: `[{ts_ms, lm:[[x,y,z]×33]}, ...]`)
+  - HR samples written verbatim from H10 (timestamps already wall-clock)
+  - Set/rep/pause records keyed by UUIDs minted client-side (Supabase PKs match)
+  - Helpers: `startSession`, `recordHR`, `recordPoseFrame`, `recordSetStart/Complete`, `recordRep`, `recordPauseStart/End`, `markSessionComplete/Uploaded`, `getUnflushedSessions`, `loadSessionBundle`, `clearSession`
+- **`lib/sync/uploader.ts`** — batch upload to Supabase
+  - Insert order: `sessions` → `session_sets` → `session_reps` → `session_pauses` → `session_hr_samples` → `session_pose_frames` (FK-safe)
+  - Batches: HR=500/req, pose=200/req, sets/reps/pauses=200/req
+  - On clean completion: marks `prescriptions.status = 'completed'`
+  - Exponential backoff: up to 5 attempts at 1s/2s/4s/8s/16s (capped 30s); on success, marks uploaded then clears local
+  - `flushPending()` drains every locally completed-but-not-uploaded session
+  - Typed via `Database['public']['Tables'][T]['Insert']`
+- **`lib/pose/sessionStateMachine.ts`** — extended with discrete event callbacks
+  - New `SessionEvents`: `onSetStart`, `onSetEnd`, `onRepComplete`, `onPauseStart`, `onPauseEnd`, `onSessionEnd`
+  - `SetEntry` gained `exerciseId` so reps/sets can FK to `exercises`
+  - `enterActive` only fires `onSetStart` when transitioning from READY (not on resume from PAUSED)
+  - `enterSetComplete` carries the reason (`reps_complete`/`t_pose`/`abandoned`) into the event
+- **`SessionRunClient.tsx`** — wires the state machine to the buffer
+  - On Start: mints `sessionId` (`crypto.randomUUID()`), captures `Date.now()` + `performance.now()` baselines for perf→wall conversion, writes the session row, then starts the state machine
+  - Mints UUIDs per set & per pause; FKs through to reps/pauses
+  - Pose recorder gated to `phase === 'ACTIVE'` (no wasted writes during overlays)
+  - On `SESSION_COMPLETE`: marks complete, uploads, then navigates back to calendar (with retry-message fallback if upload fails)
+- **`components/patient/PendingUploadFlusher.tsx`** — orphan-flush helper
+  - Mounted in `/patient/calendar`; on load, scans Dexie for unflushed completed sessions and uploads them via `flushPending()`
+  - Shows a small bottom-right toast while uploading and on success/failure
+- **`app/(patient)/patient/session/[prescriptionId]/run/page.tsx`** — server props
+  - Now selects `patient_id` and `exercise_id`; passes them through to the client
+
+**Key files:** `lib/buffer/sessionBuffer.ts`, `lib/sync/uploader.ts`, `components/patient/PendingUploadFlusher.tsx`, `lib/pose/sessionStateMachine.ts`, `app/(patient)/patient/session/[prescriptionId]/run/`
+
+---
+
 ## Remaining phases
 
 | Phase | Description |
 |---|---|
-| 7 | Data persistence — Dexie IndexedDB buffer, batch upload to Supabase on session complete |
 | 8 | Clinician playback — stickman replay, HR trend chart, synced scrubber, per-rep table |
 | 9 | Polish — frame visibility check, implausible HR handling, browser/permission error screens, session abandonment recovery |
