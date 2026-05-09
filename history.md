@@ -423,3 +423,32 @@ Clinicians can now create patient accounts directly from the Patients page witho
 - "Edit" link added per row in `PrescriptionHistoryTable.tsx`.
 
 **Key files:** `app/actions/patients.ts`, `app/actions/prescriptions.ts`, `app/(clinician)/clinician/patients/[id]/edit/page.tsx` (new), `app/(clinician)/clinician/patients/[id]/prescriptions/[prescriptionId]/edit/page.tsx` (new), `app/(clinician)/clinician/patients/[id]/prescriptions/[prescriptionId]/edit/EditPrescriptionClient.tsx` (new), `app/(clinician)/clinician/patients/[id]/PrescriptionHistoryTable.tsx`, `app/(clinician)/clinician/patients/[id]/page.tsx`
+
+---
+
+## Patch — Fix "no reps detected" on clinician-built exercises
+
+User reported reps weren't being counted on patient sessions for exercises created via the clinician demo flow. Root-cause audit found that the demo's auto-suggested thresholds combined with a missing recovery transition in the rep state machine to silently lock up after the first missed peak. Five fixes:
+
+### 1. RepDetector recovery transitions (`lib/pose/repDetector.ts`)
+The state machine had no exit from `TRAVELING_TO_END` other than reaching `inEnd`. If a patient bounced back to start without hitting the end zone (range slightly less than the clinician's), the SM wedged in `TRAVELING_TO_END` forever and *every subsequent rep* silently failed. Added two recoveries:
+- `TRAVELING_TO_END` + `inStart` → reset to `AT_START` (drop the attempt, don't fire a rep)
+- `TRAVELING_TO_START` + `inEnd` → back to `AT_END` (partial pump tolerance)
+
+### 2. RepDetector: enforce secondary-joint thresholds
+The form has had a "Secondary Joint Focus" feature for a while, with UI text claiming both joints must be in their zones for a rep to count. In reality `RepDetector.feed()` only ever read the primary joint — the four `secondary_*` thresholds were dead. Now `inStart` / `inEnd` AND the secondary joint's start/end zones (when configured). If the secondary joint angle is unreadable on a frame, the frame is skipped.
+
+### 3. Wider auto-suggested zones (`NewExerciseClient.tsx` → `autoTuneZones`)
+Old logic: p10/p90 of demo angles, ±8° → 16°-wide windows centered at percentiles clipped *inside* the patient's actual extreme. A patient with 5° less ROM than the clinician would never reach `inEnd` → bug 1 above. New logic uses p5/p95 with a **15° outer pad** and 8° inner pad (≈30°-wide windows that extend toward the anatomical limit), with a defensive disjoint-zone clamp for short ROMs.
+
+### 4. Direction inferred from rest position, zones assigned by direction
+Old direction heuristic (compare first-half mean to mid-range) was a coin flip on uniform reps. New heuristic uses the first ≈1 s of the demo as the patient's resting position and picks `extension_first` / `flexion_first` based on whether that rest is closer to the low or high extreme. Start/end zones are then assigned by role rather than always being low=start, high=end — fixes the silent contradiction where the form persisted `flexion_first` while the zones were laid out for an extension. Default direction also flipped to `extension_first` so the (unchanged) default zone values are internally consistent.
+
+### 5. Orientation validation during demo (`NewExerciseClient.tsx`)
+Recording a demo in a different orientation than the saved `view_orientation` produced thresholds that didn't transfer cleanly to the patient session. The demo now runs `detectOrientation` per frame and only pushes angles into the histogram when the clinician's orientation matches the configured `viewOrientation`. After 30 sustained mismatch frames a warning banner appears on the canvas. Live HUD continues to update so the clinician still gets feedback.
+
+Secondary joint angles are now also recorded and auto-tuned the same way as primary, so wiring up secondary enforcement (#2) doesn't silently kill rep detection on existing-style demos.
+
+**Caveat:** exercises created *before* this patch with `secondary_joint` enabled but unsuited thresholds (e.g. defaults left at 80–100 / 150–180) will now actually enforce those zones. Re-tune via the edit-exercise flow if patients stop registering reps on those.
+
+**Key files:** `lib/pose/repDetector.ts`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`

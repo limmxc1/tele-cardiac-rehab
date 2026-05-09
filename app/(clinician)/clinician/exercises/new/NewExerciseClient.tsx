@@ -46,6 +46,63 @@ function buildHistogram(angles: number[]): number[] {
   return hist
 }
 
+interface Zone { min: number; max: number }
+interface TunedThresholds {
+  low: Zone
+  high: Zone
+  direction: Direction
+}
+
+/**
+ * Pick start/end zones from a recorded angle history.
+ *
+ * Zones are intentionally generous (≈30° wide on the outer edge, ≈8° on the
+ * inner edge) so a patient with slightly less ROM than the clinician still
+ * registers reps. Without this, the rep state machine can wedge in
+ * TRAVELING_TO_END forever the first time a patient undershoots.
+ *
+ * Direction is inferred from where the clinician rested at the very start
+ * of the demo (first ≈1 s) rather than from a half-vs-half mean comparison
+ * — the latter is unreliable when reps are uniform.
+ */
+function autoTuneZones(history: number[]): TunedThresholds | null {
+  if (history.length < 30) return null
+  const sorted = [...history].sort((a, b) => a - b)
+  const lo = sorted[Math.floor(sorted.length * 0.05)]
+  const hi = sorted[Math.floor(sorted.length * 0.95)]
+  if (hi - lo < 10) return null
+
+  const range = hi - lo
+  const innerPad = Math.min(8, Math.max(3, Math.floor(range / 4)))
+  const outerPad = 15
+
+  const lowMin = Math.max(0,   Math.round(lo) - outerPad)
+  let lowMax = Math.min(180, Math.round(lo) + innerPad)
+  let highMin = Math.max(0,   Math.round(hi) - innerPad)
+  const highMax = Math.min(180, Math.round(hi) + outerPad)
+
+  // Defensive: keep the zones disjoint even on very short ROMs.
+  if (lowMax >= highMin) {
+    const mid = Math.round((lo + hi) / 2)
+    lowMax = Math.min(lowMax, mid - 1)
+    highMin = Math.max(highMin, mid + 1)
+  }
+
+  const restWindowSize = Math.min(30, Math.floor(history.length / 4))
+  const restWindow = history.slice(0, Math.max(1, restWindowSize))
+  const restMean = restWindow.reduce((a, b) => a + b, 0) / restWindow.length
+  const direction: Direction =
+    Math.abs(restMean - lo) < Math.abs(restMean - hi)
+      ? 'extension_first'
+      : 'flexion_first'
+
+  return {
+    low:  { min: lowMin,  max: lowMax  },
+    high: { min: highMin, max: highMax },
+    direction,
+  }
+}
+
 export default function NewExerciseClient({
   exerciseId,
   initial,
@@ -61,7 +118,9 @@ export default function NewExerciseClient({
   const [instructions, setInstructions] = useState(initial?.instructions ?? '')
   const [joint, setJoint] = useState<Joint>(initial?.joint ?? 'knee')
   const [side, setSide] = useState<Side>(initial?.side ?? 'both')
-  const [direction, setDirection] = useState<Direction>(initial?.direction ?? 'flexion_first')
+  // Default 'extension_first' matches the default zone values (start 80–100° flexed,
+  // end 155–175° extended). The previous 'flexion_first' default contradicted them.
+  const [direction, setDirection] = useState<Direction>(initial?.direction ?? 'extension_first')
   const [viewOrientation, setViewOrientation] = useState<ViewOrientation>(initial?.viewOrientation ?? 'front')
   const [gifFile, setGifFile] = useState<File | null>(null)
   const [existingGifUrl, setExistingGifUrl] = useState<string | null>(initial?.existingGifUrl ?? null)
@@ -90,6 +149,7 @@ export default function NewExerciseClient({
   // Save state
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [orientationWarning, setOrientationWarning] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -97,17 +157,22 @@ export default function NewExerciseClient({
   const streamRef = useRef<MediaStream | null>(null)
   const animFrameRef = useRef(0)
   const angleHistoryRef = useRef<number[]>([])
+  const secondaryAngleHistoryRef = useRef<number[]>([])
   const runningRef = useRef(false)
   const jointRef = useRef(joint)
   const sideRef = useRef(side)
   const secondaryJointRef = useRef(secondaryJoint)
   const secondaryEnabledRef = useRef(secondaryEnabled)
+  const viewOrientationRef = useRef(viewOrientation)
+  const mismatchStreakRef = useRef(0)
+  const orientationWarnedRef = useRef(false)
 
   // Keep refs in sync so the rAF closure always reads the current joint/side
   useEffect(() => { jointRef.current = joint }, [joint])
   useEffect(() => { sideRef.current = side }, [side])
   useEffect(() => { secondaryJointRef.current = secondaryJoint }, [secondaryJoint])
   useEffect(() => { secondaryEnabledRef.current = secondaryEnabled }, [secondaryEnabled])
+  useEffect(() => { viewOrientationRef.current = viewOrientation }, [viewOrientation])
 
   const stopDemo = useCallback(() => {
     runningRef.current = false
@@ -122,22 +187,30 @@ export default function NewExerciseClient({
     setTotalSamples(angleHistoryRef.current.length)
     setHistogramData(buildHistogram(angleHistoryRef.current))
 
-    // Auto-suggest thresholds from the P10/P90 of recorded angles
-    const history = angleHistoryRef.current
-    if (history.length > 10) {
-      const sorted = [...history].sort((a, b) => a - b)
-      const p10 = sorted[Math.floor(sorted.length * 0.1)]
-      const p90 = sorted[Math.floor(sorted.length * 0.9)]
-      const low = Math.round(p10)
-      const high = Math.round(p90)
-      setStartMin(Math.max(0, low - 8))
-      setStartMax(Math.min(180, low + 8))
-      setEndMin(Math.max(0, high - 8))
-      setEndMax(Math.min(180, high + 8))
-      // If the low zone came first historically, patient started flexed → extension_first
-      const midPoint = history.length / 2
-      const firstHalfMean = history.slice(0, midPoint).reduce((a, b) => a + b, 0) / midPoint
-      setDirection(firstHalfMean < (low + high) / 2 ? 'extension_first' : 'flexion_first')
+    // Auto-suggest thresholds from the demo. Direction is inferred from the
+    // patient's resting position at the start of the recording (first ≈1 s);
+    // start/end zone roles are then assigned by direction so the rep state
+    // machine sees a consistent picture.
+    const tuned = autoTuneZones(angleHistoryRef.current)
+    if (tuned) {
+      setDirection(tuned.direction)
+      const startZone = tuned.direction === 'extension_first' ? tuned.low : tuned.high
+      const endZone   = tuned.direction === 'extension_first' ? tuned.high : tuned.low
+      setStartMin(startZone.min); setStartMax(startZone.max)
+      setEndMin(endZone.min);     setEndMax(endZone.max)
+
+      // Tune the secondary joint zones the same way. If we left them at form
+      // defaults, RepDetector.feed() (which now enforces the secondary zones)
+      // would silently kill rep detection.
+      if (secondaryEnabledRef.current) {
+        const secTuned = autoTuneZones(secondaryAngleHistoryRef.current)
+        if (secTuned) {
+          const secStart = tuned.direction === 'extension_first' ? secTuned.low : secTuned.high
+          const secEnd   = tuned.direction === 'extension_first' ? secTuned.high : secTuned.low
+          setSecondaryStartMin(secStart.min); setSecondaryStartMax(secStart.max)
+          setSecondaryEndMin(secEnd.min);     setSecondaryEndMax(secEnd.max)
+        }
+      }
     }
   }, [])
 
@@ -145,10 +218,14 @@ export default function NewExerciseClient({
     setDemoStatus('loading')
     setError(null)
     angleHistoryRef.current = []
+    secondaryAngleHistoryRef.current = []
+    mismatchStreakRef.current = 0
+    orientationWarnedRef.current = false
     setHistogramData(Array(BUCKETS).fill(0))
     setTotalSamples(0)
     setCurrentAngle(null)
     setSecondaryCurrentAngle(null)
+    setOrientationWarning(false)
 
     try {
       const { PoseLandmarker, FilesetResolver, DrawingUtils } =
@@ -213,21 +290,53 @@ export default function NewExerciseClient({
               lineWidth: 2,
             })
 
+            // Only record into the histogram while the clinician is in the
+            // orientation the patient will use — angles measured from the
+            // wrong view don't transfer cleanly. Live HUD still updates
+            // either way so the clinician sees feedback.
+            const detected = detectOrientation(lms)
+            const orientationOk =
+              detected === null || detected === viewOrientationRef.current
+
             const angle = getJointAngle(lms, jointRef.current, sideRef.current)
             if (angle !== null) {
               const rounded = Math.round(angle)
               setCurrentAngle(rounded)
-              angleHistoryRef.current.push(rounded)
-              frameCount++
-              if (frameCount % 20 === 0) {
-                setHistogramData(buildHistogram(angleHistoryRef.current))
-                setTotalSamples(angleHistoryRef.current.length)
+              if (orientationOk) {
+                angleHistoryRef.current.push(rounded)
+                frameCount++
+                if (frameCount % 20 === 0) {
+                  setHistogramData(buildHistogram(angleHistoryRef.current))
+                  setTotalSamples(angleHistoryRef.current.length)
+                }
               }
             }
 
             if (secondaryEnabledRef.current) {
               const sec = getJointAngle(lms, secondaryJointRef.current, sideRef.current)
-              setSecondaryCurrentAngle(sec === null ? null : Math.round(sec))
+              if (sec === null) {
+                setSecondaryCurrentAngle(null)
+              } else {
+                const secRounded = Math.round(sec)
+                setSecondaryCurrentAngle(secRounded)
+                if (orientationOk) secondaryAngleHistoryRef.current.push(secRounded)
+              }
+            }
+
+            // Debounced sustained-mismatch banner. Single-frame flickers
+            // shouldn't toggle the warning.
+            if (orientationOk) {
+              mismatchStreakRef.current = 0
+              if (orientationWarnedRef.current) {
+                orientationWarnedRef.current = false
+                setOrientationWarning(false)
+              }
+            } else {
+              mismatchStreakRef.current++
+              if (mismatchStreakRef.current >= 30 && !orientationWarnedRef.current) {
+                orientationWarnedRef.current = true
+                setOrientationWarning(true)
+              }
             }
           }
         }
@@ -521,6 +630,12 @@ export default function NewExerciseClient({
                           </span>
                         </div>
                       )}
+                    </div>
+                  )}
+                  {orientationWarning && (
+                    <div className="absolute bottom-3 left-3 max-w-[220px] rounded-lg bg-amber-500/95 px-3 py-2 text-xs font-medium text-white shadow">
+                      Stand {viewOrientation === 'side' ? 'sideways to' : 'facing'} the camera —
+                      frames are not being recorded.
                     </div>
                   )}
                   <button
