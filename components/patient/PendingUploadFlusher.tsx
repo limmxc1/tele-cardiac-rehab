@@ -6,7 +6,7 @@ import { flushPending } from '@/lib/sync/uploader'
 type FlushState =
   | { kind: 'idle' }
   | { kind: 'flushing'; count: number }
-  | { kind: 'done'; uploaded: number; failed: number }
+  | { kind: 'done'; uploaded: number; failed: number; abandoned: number }
 
 /**
  * Mount on patient screens so any locally-buffered completed sessions are
@@ -38,8 +38,9 @@ export default function PendingUploadFlusher() {
       const results = await flushPending()
       if (cancelled) return
       const uploaded = results.filter((r) => r.ok).length
-      const failed = results.length - uploaded
-      setState({ kind: 'done', uploaded, failed })
+      const abandoned = results.filter((r) => !r.ok && r.abandoned).length
+      const failed = results.length - uploaded - abandoned
+      setState({ kind: 'done', uploaded, failed, abandoned })
       if (failed === 0) setTimeout(() => setState({ kind: 'idle' }), 4000)
     })()
     return () => { cancelled = true }
@@ -52,14 +53,22 @@ export default function PendingUploadFlusher() {
       {state.kind === 'flushing' && (
         <p>Uploading {state.count} pending session{state.count > 1 ? 's' : ''}…</p>
       )}
-      {state.kind === 'done' && state.failed === 0 && (
+      {state.kind === 'done' && state.failed === 0 && state.abandoned === 0 && (
         <p className="text-green-300">Uploaded {state.uploaded} pending session{state.uploaded > 1 ? 's' : ''}.</p>
       )}
-      {state.kind === 'done' && state.failed > 0 && (
-        <p className="text-amber-300">
-          {state.uploaded > 0 && `Uploaded ${state.uploaded}. `}
-          {state.failed} session{state.failed > 1 ? 's' : ''} still pending — will retry.
-        </p>
+      {state.kind === 'done' && (state.failed > 0 || state.abandoned > 0) && (
+        <div className="text-amber-300 space-y-1">
+          {state.uploaded > 0 && <p>Uploaded {state.uploaded}.</p>}
+          {state.abandoned > 0 && (
+            <p>
+              Discarded {state.abandoned} recording{state.abandoned > 1 ? 's' : ''} — the matching
+              prescription was deleted.
+            </p>
+          )}
+          {state.failed > 0 && (
+            <p>{state.failed} session{state.failed > 1 ? 's' : ''} still pending — will retry.</p>
+          )}
+        </div>
       )}
     </div>
   )

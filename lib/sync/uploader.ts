@@ -7,6 +7,7 @@ import {
   type BufferedSession,
 } from '@/lib/buffer/sessionBuffer'
 import type { Database, Json } from '@/lib/supabase/types'
+import type { PostgrestError } from '@supabase/supabase-js'
 
 const HR_BATCH = 500
 const POSE_BATCH = 200
@@ -14,9 +15,30 @@ const SET_BATCH = 200
 
 export type UploadResult =
   | { ok: true; sessionId: string }
-  | { ok: false; sessionId: string; error: string }
+  | { ok: false; sessionId: string; error: string; abandoned?: boolean }
 
 type TableName = keyof Database['public']['Tables']
+
+/**
+ * Errors that won't get better by retrying — e.g. the parent prescription was
+ * deleted while this recording sat unflushed in the buffer. We surface these
+ * once and drop the buffered session so it doesn't loop forever on every
+ * calendar mount.
+ */
+class NonRetryableUploadError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message)
+    this.name = 'NonRetryableUploadError'
+  }
+}
+
+function classifyError(table: string, err: PostgrestError): Error {
+  const msg = `${table}: ${err.message}`
+  // Postgres FK violation. The parent row (prescription, exercise, etc.) is
+  // gone — retrying won't bring it back.
+  if (err.code === '23503') return new NonRetryableUploadError(msg, err.code)
+  return new Error(msg)
+}
 
 async function batchUpsert<T extends TableName>(
   table: T,
@@ -29,7 +51,7 @@ async function batchUpsert<T extends TableName>(
     const { error } = await supabase
       .from(table)
       .upsert(chunk as never, { onConflict, ignoreDuplicates: false })
-    if (error) throw new Error(`${table}: ${error.message}`)
+    if (error) throw classifyError(table, error)
   }
 }
 
@@ -38,7 +60,6 @@ async function uploadOnce(sessionId: string): Promise<void> {
   const session = bundle.session
   if (!session) throw new Error(`Session ${sessionId} not found in buffer`)
 
-  // 1. sessions (parent of everything).
   {
     const { error } = await supabase
       .from('sessions')
@@ -53,11 +74,9 @@ async function uploadOnce(sessionId: string): Promise<void> {
         },
         { onConflict: 'id' },
       )
-    if (error) throw new Error(`sessions: ${error.message}`)
+    if (error) throw classifyError('sessions', error)
   }
 
-  // 2. session_sets — one row per recording. reps_target is unused (nullable
-  // on the column now); reps_completed left at default 0.
   if (bundle.sets.length > 0) {
     const setRows = bundle.sets.map((s) => ({
       id: s.setId,
@@ -72,7 +91,6 @@ async function uploadOnce(sessionId: string): Promise<void> {
     await batchUpsert('session_sets', setRows, SET_BATCH, 'id')
   }
 
-  // 3. session_hr_samples.
   if (bundle.hrSamples.length > 0) {
     const seen = new Set<number>()
     const hrRows: Database['public']['Tables']['session_hr_samples']['Insert'][] = []
@@ -88,7 +106,6 @@ async function uploadOnce(sessionId: string): Promise<void> {
     await batchUpsert('session_hr_samples', hrRows, HR_BATCH, 'session_id,timestamp_ms')
   }
 
-  // 4. session_pose_frames — sparse landmark map per frame.
   if (bundle.poseFrames.length > 0) {
     const sorted = [...bundle.poseFrames].sort((a, b) => a.secondOffset - b.secondOffset)
     const frameRows = sorted.map((f) => ({
@@ -99,13 +116,12 @@ async function uploadOnce(sessionId: string): Promise<void> {
     await batchUpsert('session_pose_frames', frameRows, POSE_BATCH, 'session_id,second_offset')
   }
 
-  // 5. Mark prescription completed only on a clean completion.
   if (session.status === 'completed') {
     const { error } = await supabase
       .from('prescriptions')
       .update({ status: 'completed' })
       .eq('id', session.prescriptionId)
-    if (error) throw new Error(`prescriptions: ${error.message}`)
+    if (error) throw classifyError('prescriptions', error)
   }
 
   await markSessionUploaded(session.sessionId)
@@ -130,6 +146,15 @@ export async function uploadSession(
         return { ok: true, sessionId }
       } catch (err) {
         lastErr = err
+        if (err instanceof NonRetryableUploadError) {
+          // Parent row is gone. Surface once and drop the buffered session so
+          // we don't keep retrying on every page load.
+          console.warn(`[uploader] dropping orphan session ${sessionId}: ${err.message}`)
+          try { await clearSession(sessionId) } catch (clearErr) {
+            console.warn(`[uploader] failed to clear orphan session ${sessionId}`, clearErr)
+          }
+          return { ok: false, sessionId, error: err.message, abandoned: true }
+        }
         const delay = Math.min(30_000, 1000 * 2 ** attempt)
         console.warn(`[uploader] attempt ${attempt + 1}/${maxAttempts} failed, retrying in ${delay}ms`, err)
         await new Promise((r) => setTimeout(r, delay))

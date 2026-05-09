@@ -545,3 +545,14 @@ Clinicians can now mark a joint as **Both** instead of picking left/right separa
 - Form rule: ticking `Both` replaces any per-side rows for the same joint (and vice versa) — keeps the configuration unambiguous. Pick `Left` + `Right` separately if you want side-by-side traces (asymmetry analysis); pick `Both` for symmetric movements where one trace is enough.
 
 **Key files:** `app/actions/exercises.ts`, `lib/pose/landmarks.ts`, `lib/pose/sessionStateMachine.ts`, `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `lib/playback/loader.ts`, `app/(patient)/patient/session/[prescriptionId]/run/page.tsx`, `components/playback/StickmanCanvas.tsx`, `components/playback/MetricsTimeline.tsx`
+
+---
+
+## Patch — Drop orphan-FK upload retries
+
+User hit a perpetual 5-attempt retry loop on `flushPending` after a buffered recording's parent prescription was deleted: every attempt threw `sessions: insert or update on table "sessions" violates foreign key constraint "sessions_prescription_id_fkey"`. The error was being treated as transient.
+
+- `lib/sync/uploader.ts` now throws a typed `NonRetryableUploadError` whenever Postgres returns `code 23503` (FK violation). The retry loop short-circuits, the buffered session is cleared from Dexie, and the result is surfaced as `{ ok: false, abandoned: true, ... }`.
+- `PendingUploadFlusher` distinguishes "abandoned" results (parent row deleted) from "failed" ones (transient errors that will retry next time). The toast now reads "Discarded N recording(s) — the matching prescription was deleted." instead of looping silently.
+
+**Key files:** `lib/sync/uploader.ts`, `components/patient/PendingUploadFlusher.tsx`
