@@ -24,6 +24,35 @@ export interface ExercisePayload {
   created_by: string | null
 }
 
+export async function updateExerciseAction(
+  id: string,
+  data: Omit<ExercisePayload, 'created_by'>
+): Promise<{ error: string } | null> {
+  const { error } = await supabaseServer.from('exercises').update({
+    name: data.name,
+    instructions_text: data.instructions_text,
+    reference_gif_url: data.reference_gif_url,
+    primary_joint: data.primary_joint,
+    primary_side: data.primary_side,
+    start_angle_min: data.start_angle_min,
+    start_angle_max: data.start_angle_max,
+    end_angle_min: data.end_angle_min,
+    end_angle_max: data.end_angle_max,
+    direction: data.direction,
+    secondary_joint: data.secondary_joint,
+    secondary_start_min: data.secondary_start_min,
+    secondary_start_max: data.secondary_start_max,
+    secondary_end_min: data.secondary_end_min,
+    secondary_end_max: data.secondary_end_max,
+    view_orientation: data.view_orientation,
+  }).eq('id', id)
+
+  if (error) return { error: error.message }
+
+  revalidatePath('/clinician/exercises')
+  redirect('/clinician/exercises')
+}
+
 export async function createExerciseAction(
   data: ExercisePayload
 ): Promise<{ error: string } | null> {

@@ -49,7 +49,14 @@ export default async function ExercisesPage() {
               <tbody>
                 {exercises.map((ex) => (
                   <tr key={ex.id} className="border-b border-slate-100 last:border-0">
-                    <td className="px-4 py-3 font-medium text-slate-800">{ex.name}</td>
+                    <td className="px-4 py-3 font-medium text-slate-800">
+                      <Link
+                        href={`/clinician/exercises/${ex.id}/edit`}
+                        className="hover:text-blue-600 hover:underline"
+                      >
+                        {ex.name}
+                      </Link>
+                    </td>
                     <td className="px-4 py-3 capitalize text-slate-600">{ex.primary_joint}</td>
                     <td className="px-4 py-3 capitalize text-slate-600">{ex.primary_side}</td>
                     <td className="px-4 py-3 capitalize text-slate-600">

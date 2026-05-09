@@ -4,7 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase/client'
 import { useAuthStore } from '@/lib/store/auth'
-import { createExerciseAction } from '@/app/actions/exercises'
+import { createExerciseAction, updateExerciseAction } from '@/app/actions/exercises'
 import { getJointAngle } from '@/lib/pose/angles'
 
 type Joint = 'knee' | 'hip' | 'shoulder' | 'elbow' | 'ankle'
@@ -12,6 +12,26 @@ type Side = 'left' | 'right' | 'both'
 type Direction = 'flexion_first' | 'extension_first'
 type ViewOrientation = 'front' | 'side'
 type DemoStatus = 'idle' | 'loading' | 'running' | 'stopped'
+
+interface InitialValues {
+  name: string
+  instructions: string
+  joint: Joint
+  side: Side
+  direction: Direction
+  viewOrientation: ViewOrientation
+  startMin: number
+  startMax: number
+  endMin: number
+  endMax: number
+  secondaryEnabled: boolean
+  secondaryJoint: Joint
+  secondaryStartMin: number
+  secondaryStartMax: number
+  secondaryEndMin: number
+  secondaryEndMax: number
+  existingGifUrl: string | null
+}
 
 const BUCKETS = 36
 const BUCKET_DEG = 5
@@ -25,31 +45,39 @@ function buildHistogram(angles: number[]): number[] {
   return hist
 }
 
-export default function NewExerciseClient() {
+export default function NewExerciseClient({
+  exerciseId,
+  initial,
+}: {
+  exerciseId?: string
+  initial?: InitialValues
+}) {
+  const mode = exerciseId ? 'edit' : 'create'
   const user = useAuthStore((s) => s.user)
 
   // Form fields
-  const [name, setName] = useState('')
-  const [instructions, setInstructions] = useState('')
-  const [joint, setJoint] = useState<Joint>('knee')
-  const [side, setSide] = useState<Side>('both')
-  const [direction, setDirection] = useState<Direction>('flexion_first')
-  const [viewOrientation, setViewOrientation] = useState<ViewOrientation>('front')
+  const [name, setName] = useState(initial?.name ?? '')
+  const [instructions, setInstructions] = useState(initial?.instructions ?? '')
+  const [joint, setJoint] = useState<Joint>(initial?.joint ?? 'knee')
+  const [side, setSide] = useState<Side>(initial?.side ?? 'both')
+  const [direction, setDirection] = useState<Direction>(initial?.direction ?? 'flexion_first')
+  const [viewOrientation, setViewOrientation] = useState<ViewOrientation>(initial?.viewOrientation ?? 'front')
   const [gifFile, setGifFile] = useState<File | null>(null)
+  const [existingGifUrl, setExistingGifUrl] = useState<string | null>(initial?.existingGifUrl ?? null)
 
   // Threshold sliders
-  const [startMin, setStartMin] = useState(80)
-  const [startMax, setStartMax] = useState(100)
-  const [endMin, setEndMin] = useState(155)
-  const [endMax, setEndMax] = useState(175)
+  const [startMin, setStartMin] = useState(initial?.startMin ?? 80)
+  const [startMax, setStartMax] = useState(initial?.startMax ?? 100)
+  const [endMin, setEndMin] = useState(initial?.endMin ?? 155)
+  const [endMax, setEndMax] = useState(initial?.endMax ?? 175)
 
   // Secondary joint (optional co-constraint)
-  const [secondaryEnabled, setSecondaryEnabled] = useState(false)
-  const [secondaryJoint, setSecondaryJoint] = useState<Joint>('hip')
-  const [secondaryStartMin, setSecondaryStartMin] = useState(80)
-  const [secondaryStartMax, setSecondaryStartMax] = useState(100)
-  const [secondaryEndMin, setSecondaryEndMin] = useState(150)
-  const [secondaryEndMax, setSecondaryEndMax] = useState(180)
+  const [secondaryEnabled, setSecondaryEnabled] = useState(initial?.secondaryEnabled ?? false)
+  const [secondaryJoint, setSecondaryJoint] = useState<Joint>(initial?.secondaryJoint ?? 'hip')
+  const [secondaryStartMin, setSecondaryStartMin] = useState(initial?.secondaryStartMin ?? 80)
+  const [secondaryStartMax, setSecondaryStartMax] = useState(initial?.secondaryStartMax ?? 100)
+  const [secondaryEndMin, setSecondaryEndMin] = useState(initial?.secondaryEndMin ?? 150)
+  const [secondaryEndMax, setSecondaryEndMax] = useState(initial?.secondaryEndMax ?? 180)
 
   // Demo state
   const [demoStatus, setDemoStatus] = useState<DemoStatus>('idle')
@@ -233,7 +261,7 @@ export default function NewExerciseClient() {
     setError(null)
 
     try {
-      let gifUrl: string | null = null
+      let gifUrl: string | null = existingGifUrl
 
       if (gifFile) {
         const safeName = gifFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -251,9 +279,10 @@ export default function NewExerciseClient() {
           .from('reference-gifs')
           .getPublicUrl(path)
         gifUrl = publicUrl
+        setExistingGifUrl(publicUrl)
       }
 
-      const result = await createExerciseAction({
+      const payload = {
         name: name.trim(),
         instructions_text: instructions.trim() || null,
         reference_gif_url: gifUrl,
@@ -270,8 +299,11 @@ export default function NewExerciseClient() {
         secondary_end_min: secondaryEnabled ? secondaryEndMin : null,
         secondary_end_max: secondaryEnabled ? secondaryEndMax : null,
         view_orientation: viewOrientation,
-        created_by: user?.id ?? null,
-      })
+      }
+
+      const result = mode === 'edit' && exerciseId
+        ? await updateExerciseAction(exerciseId, payload)
+        : await createExerciseAction({ ...payload, created_by: user?.id ?? null })
 
       if (result?.error) {
         setError(result.error)
@@ -298,7 +330,9 @@ export default function NewExerciseClient() {
         <Link href="/clinician/exercises" className="text-sm text-slate-400 hover:text-slate-600">
           ← Library
         </Link>
-        <h1 className="text-lg font-semibold text-slate-800">New Exercise</h1>
+        <h1 className="text-lg font-semibold text-slate-800">
+          {mode === 'edit' ? 'Edit Exercise' : 'New Exercise'}
+        </h1>
       </header>
 
       <main className="mx-auto max-w-2xl space-y-6 p-6">
@@ -339,9 +373,23 @@ export default function NewExerciseClient() {
             onChange={(e) => setGifFile(e.target.files?.[0] ?? null)}
             className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-600 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-50 file:px-3 file:py-1 file:text-sm file:font-medium file:text-blue-700"
           />
-          {gifFile && (
+          {gifFile ? (
             <p className="text-xs text-slate-400">Selected: {gifFile.name}</p>
-          )}
+          ) : existingGifUrl ? (
+            <div className="mt-2 flex items-center gap-3">
+              <img src={existingGifUrl} alt="Current reference" className="h-16 rounded-lg object-cover" />
+              <div>
+                <p className="text-xs text-slate-500">Current reference GIF</p>
+                <button
+                  type="button"
+                  onClick={() => setExistingGifUrl(null)}
+                  className="text-xs text-rose-500 hover:text-rose-700"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Joint + Side */}
@@ -672,7 +720,7 @@ export default function NewExerciseClient() {
           disabled={saving}
           className="w-full rounded-xl bg-blue-600 py-3 text-lg font-semibold text-white disabled:opacity-50 hover:bg-blue-700 active:bg-blue-800"
         >
-          {saving ? 'Saving…' : 'Save Exercise'}
+          {saving ? 'Saving…' : mode === 'edit' ? 'Save Changes' : 'Save Exercise'}
         </button>
       </main>
     </div>
