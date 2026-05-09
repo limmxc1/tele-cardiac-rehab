@@ -21,6 +21,7 @@ export default async function PrescribePage({
       .select(
         'id, name, primary_joint, primary_side, start_angle_min, start_angle_max, end_angle_min, end_angle_max'
       )
+      .is('archived_at', null)
       .order('name'),
   ])
 

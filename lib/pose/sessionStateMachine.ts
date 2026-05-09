@@ -2,6 +2,8 @@ import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { RepDetector, type RepConfig, type RepEvent } from './repDetector'
 import { TPoseDetector } from './tposeDetector'
 import { OPoseDetector } from './oposeDetector'
+import { OrientationGate, type ViewOrientation } from './orientationDetector'
+import { JOINT_TRIPLETS } from './landmarks'
 import {
   startReadyCue, repCue, restCue, nextExerciseCue,
   pauseCue, resumeReadyCue, sessionCompleteCue,
@@ -10,16 +12,63 @@ import {
 
 export type { PauseReason, RepEvent }
 
-/** Visibility threshold (0..1) for a landmark to count as "in frame". */
+/** Visibility threshold (0..1) for a landmark to count as "in frame" for buffer recording. */
 const VISIBILITY_THRESHOLD = 0.5
-/** Sustained partial-body visibility that triggers an out_of_frame pause during ACTIVE. */
+/** Looser threshold used for joint-specific gating (rep detection / pause trigger). */
+const JOINT_VISIBILITY_THRESHOLD = 0.3
+/** Sustained joint-occluded visibility that triggers an out_of_frame pause during ACTIVE. */
 const PARTIAL_BODY_PAUSE_MS = 2_000
+
+/**
+ * Body-only landmarks: shoulders, elbows, wrists, hips, knees, ankles, foot index.
+ * Skips face (0-10), fingers (17-22), heels (29-30) — these flicker even when the
+ * patient is fully visible to the camera and aren't used for joint-angle math.
+ */
+const BODY_LANDMARK_INDICES = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32] as const
 
 export function isFullyInFrame(landmarks: NormalizedLandmark[]): boolean {
   if (landmarks.length < 33) return false
-  for (const lm of landmarks) {
-    const v = lm.visibility
+  for (const i of BODY_LANDMARK_INDICES) {
+    const v = landmarks[i]?.visibility
     if (v === undefined || v < VISIBILITY_THRESHOLD) return false
+  }
+  return true
+}
+
+/** Check that the specific triplet (proximal, joint, distal) all meet a visibility floor. */
+function isTripletVisible(
+  landmarks: NormalizedLandmark[],
+  triplet: readonly [number, number, number],
+  threshold: number,
+): boolean {
+  for (const i of triplet) {
+    const v = landmarks[i]?.visibility
+    if (v === undefined || v < threshold) return false
+  }
+  return true
+}
+
+/**
+ * True when the landmarks needed to score the configured joint(s) are reliable.
+ * Only the rep-relevant joint must be visible — a deep squat that hides the
+ * face or fingers shouldn't block rep detection.
+ */
+function isRepJointVisible(landmarks: NormalizedLandmark[], cfg: RepConfig): boolean {
+  const primary = JOINT_TRIPLETS[cfg.primaryJoint]
+  if (!primary) return false
+  const sideOk = (side: 'left' | 'right' | 'both', t: typeof primary): boolean => {
+    if (side === 'both') {
+      return (
+        isTripletVisible(landmarks, t.left, JOINT_VISIBILITY_THRESHOLD) ||
+        isTripletVisible(landmarks, t.right, JOINT_VISIBILITY_THRESHOLD)
+      )
+    }
+    return isTripletVisible(landmarks, t[side], JOINT_VISIBILITY_THRESHOLD)
+  }
+  if (!sideOk(cfg.primarySide, primary)) return false
+  if (cfg.secondaryJoint) {
+    const secondary = JOINT_TRIPLETS[cfg.secondaryJoint]
+    if (secondary && !sideOk(cfg.primarySide, secondary)) return false
   }
   return true
 }
@@ -42,6 +91,9 @@ export interface SetEntry {
   isLastSetOfItem: boolean
   isLastSet: boolean
   nextExerciseName: string | null
+  /** Required camera view for this exercise. Patient must hold the orientation
+   *  before the start gesture is accepted. */
+  viewOrientation: ViewOrientation
 }
 
 export type SetEndReason = 'reps_complete' | 't_pose' | 'abandoned'
@@ -76,6 +128,10 @@ export interface SessionSnapshot {
   fullyInFrame: boolean
   /** 0..1 — O-pose hold progress during READY (start-of-set gesture). */
   oPoseProgress: number
+  /** 0..1 — patient is holding the requested view orientation. Must reach 1 before the O-pose gate opens. */
+  orientationProgress: number
+  /** True once orientationProgress has reached 1 — UI uses this to swap from coaching to start gesture. */
+  orientationOk: boolean
 }
 
 export class SessionStateMachine {
@@ -91,6 +147,7 @@ export class SessionStateMachine {
   private repDetector: RepDetector | null = null
   private tposeDetector: TPoseDetector
   private oposeDetector: OPoseDetector
+  private orientationGate: OrientationGate
 
   private latestHr: number | null = null
   private hrBreachStart: number | null = null
@@ -106,6 +163,8 @@ export class SessionStateMachine {
   // READY view state — surfaced in snapshots so the UI can coach the patient.
   private fullyInFrame = false
   private oPoseProgress = 0
+  private orientationProgress = 0
+  private orientationOk = false
 
   private restInterval: ReturnType<typeof setInterval> | null = null
 
@@ -119,6 +178,7 @@ export class SessionStateMachine {
     this.setIdx = startSetIdx
     this.tposeDetector = new TPoseDetector(() => this.onTPoseDetected())
     this.oposeDetector = new OPoseDetector(() => this.onOPoseDetected())
+    this.orientationGate = new OrientationGate(this.sets[startSetIdx].viewOrientation)
   }
 
   private get cur(): SetEntry { return this.sets[this.setIdx] }
@@ -132,12 +192,13 @@ export class SessionStateMachine {
   feedPose(landmarks: NormalizedLandmark[], timestamp_ms: number): void {
     const fully = isFullyInFrame(landmarks)
     this.fullyInFrame = fully
+    // Joint-specific gate: even on partial-body frames, run rep detection so
+    // long as the joint(s) being scored are visible. (A deep squat that hides
+    // the face shouldn't block knee-angle detection.)
+    const jointVisible = isRepJointVisible(landmarks, this.cur.repConfig)
 
     if (this.phase === 'ACTIVE') {
-      // Gate rep detection on a fully-visible body so partial frames don't
-      // confuse the angle/state machine. Also pause the session if the body
-      // stays partial for too long — clinician needs clean data only.
-      if (fully) {
+      if (jointVisible) {
         this.partialBodyStart = null
         this.repDetector?.feed(landmarks, this.latestHr, timestamp_ms)
         this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
@@ -150,15 +211,23 @@ export class SessionStateMachine {
     } else if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach') {
       this.tposeProgress = this.tposeDetector.feed(landmarks, timestamp_ms)
     } else if (this.phase === 'PAUSED' && this.pauseReason === 'out_of_frame') {
-      // Auto-resume once the body is fully visible again (single person already
-      // implied by feedPose — multi-person resume is handled in setPersonCount).
-      if (fully && this.personCount === 1) this.resumeFromPause()
+      // Auto-resume once the relevant joint is reliably visible again.
+      if (jointVisible && this.personCount === 1) this.resumeFromPause()
     } else if (this.phase === 'READY') {
-      // Start gesture: only count O-pose progress when the body is fully visible
-      // (so we don't latch on partial poses). Reset on any partial frame.
+      // Two-stage gate: orientation first, then start gesture.
       if (fully && this.personCount === 1) {
-        this.oPoseProgress = this.oposeDetector.feed(landmarks, timestamp_ms)
+        this.orientationProgress = this.orientationGate.feed(landmarks, timestamp_ms)
+        this.orientationOk = this.orientationProgress >= 1
+        if (this.orientationOk) {
+          this.oPoseProgress = this.oposeDetector.feed(landmarks, timestamp_ms)
+        } else {
+          this.oposeDetector.reset()
+          this.oPoseProgress = 0
+        }
       } else {
+        this.orientationGate.reset()
+        this.orientationProgress = 0
+        this.orientationOk = false
         this.oposeDetector.reset()
         this.oPoseProgress = 0
       }
@@ -260,6 +329,11 @@ export class SessionStateMachine {
     this.oposeDetector.reset()
     this.oPoseProgress = 0
     this.partialBodyStart = null
+    // Rebuild the orientation gate for the upcoming set (orientation can vary
+    // exercise-to-exercise, e.g. squats front + arm raise side).
+    this.orientationGate = new OrientationGate(this.cur.viewOrientation)
+    this.orientationProgress = 0
+    this.orientationOk = false
     startReadyCue()
   }
 
@@ -298,12 +372,50 @@ export class SessionStateMachine {
 
   private onTPoseDetected(): void {
     if (this.phase === 'ACTIVE') {
-      this.enterSetComplete('t_pose')
+      // T-pose during a working set ends the entire workout. The current set
+      // is closed with reason='t_pose'; remaining sets are skipped.
+      this.endSession('t_pose')
       this.emit()
     } else if (this.phase === 'PAUSED' && this.pauseReason === 'hr_breach' && this.hrOkForResume) {
       this.resumeFromPause()
       this.emit()
     }
+  }
+
+  /**
+   * Public API — end the workout immediately, regardless of phase.
+   * If a set is currently underway it is closed with the given reason.
+   * Subsequent sets are skipped; SESSION_COMPLETE fires after a brief delay
+   * so the data buffer can flush downstream events.
+   */
+  endSessionEarly(reason: SetEndReason = 'abandoned'): void {
+    this.endSession(reason)
+    this.emit()
+  }
+
+  private endSession(reason: SetEndReason): void {
+    if (this.phase === 'SESSION_COMPLETE') return
+    // Close any in-progress set so the buffer has matching set-end metadata.
+    const inSet = this.phase === 'ACTIVE' || this.phase === 'PAUSED'
+    if (inSet) {
+      this.events.onSetEnd?.({
+        setIdx: this.setIdx,
+        set: this.cur,
+        ts_ms: performance.now(),
+        reason,
+        repsCompleted: this.repsCompleted,
+      })
+    }
+    this.repDetector = null
+    this.clearRestTimer()
+    this.phase = 'SET_COMPLETE'
+    setTimeout(() => {
+      if (this.destroyed) return
+      this.phase = 'SESSION_COMPLETE'
+      sessionCompleteCue()
+      this.events.onSessionEnd?.({ ts_ms: performance.now() })
+      this.emit()
+    }, 1500)
   }
 
   private enterSetComplete(reason: SetEndReason): void {
@@ -404,6 +516,8 @@ export class SessionStateMachine {
       completedReps: this.completedReps,
       fullyInFrame: this.fullyInFrame,
       oPoseProgress: this.oPoseProgress,
+      orientationProgress: this.orientationProgress,
+      orientationOk: this.orientationOk,
     })
   }
 }

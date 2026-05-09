@@ -32,7 +32,8 @@ export default async function SessionRunPage({
         name, primary_joint, primary_side, direction,
         start_angle_min, start_angle_max, end_angle_min, end_angle_max,
         secondary_joint, secondary_start_min, secondary_start_max,
-        secondary_end_min, secondary_end_max, reference_gif_url
+        secondary_end_min, secondary_end_max, reference_gif_url,
+        view_orientation
       )
     `)
     .eq('prescription_id', prescriptionId)
@@ -47,6 +48,7 @@ export default async function SessionRunPage({
     secondary_start_min: number | null; secondary_start_max: number | null
     secondary_end_min: number | null; secondary_end_max: number | null
     reference_gif_url: string | null
+    view_orientation: string
   }
 
   const sets: SetEntry[] = []
@@ -98,6 +100,7 @@ export default async function SessionRunPage({
         isLastSetOfItem,
         isLastSet,
         nextExerciseName: isLastSetOfItem ? nextExName : null,
+        viewOrientation: ex.view_orientation === 'side' ? 'side' : 'front',
       })
     }
   }

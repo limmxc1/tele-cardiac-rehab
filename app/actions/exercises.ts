@@ -1,6 +1,7 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 import { supabaseServer } from '@/lib/supabase/server'
 
 export interface ExercisePayload {
@@ -19,6 +20,7 @@ export interface ExercisePayload {
   secondary_start_max: number | null
   secondary_end_min: number | null
   secondary_end_max: number | null
+  view_orientation: 'front' | 'side'
   created_by: string | null
 }
 
@@ -41,10 +43,29 @@ export async function createExerciseAction(
     secondary_start_max: data.secondary_start_max,
     secondary_end_min: data.secondary_end_min,
     secondary_end_max: data.secondary_end_max,
+    view_orientation: data.view_orientation,
     created_by: data.created_by,
   })
 
   if (error) return { error: error.message }
 
   redirect('/clinician/exercises')
+}
+
+/**
+ * Soft-delete an exercise. Past prescriptions and session_sets keep their FK
+ * references so playback still resolves. New prescription forms filter by
+ * archived_at IS NULL so archived exercises don't show up.
+ */
+export async function archiveExerciseAction(
+  id: string,
+): Promise<{ error: string } | null> {
+  const { error } = await supabaseServer
+    .from('exercises')
+    .update({ archived_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) return { error: error.message }
+  revalidatePath('/clinician/exercises')
+  return null
 }

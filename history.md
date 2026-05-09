@@ -289,3 +289,50 @@ Three connected changes that ensure only clean data lands in storage and the pat
 - IDLE start-screen hint updated to mention the O-pose gesture in addition to the T-pose end-of-set gesture.
 
 **Key files:** `lib/pose/oposeDetector.ts` (new), `lib/pose/sessionStateMachine.ts`, `lib/audio/cues.ts`, `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`
+
+---
+
+## Patch — T-pose ends workout, squats fix, end-workout button, exercise delete, view orientation, 4-trend playback
+
+A bundle of patient-feedback fixes plus a clinician-side enhancement.
+
+### 1. T-pose ends the entire workout (was: ends current set)
+`SessionStateMachine.onTPoseDetected` no longer routes to `enterSetComplete('t_pose')`. The new `endSession(reason)` private helper closes the in-progress set with `ended_reason='t_pose'`, transitions through `SET_COMPLETE` for 1.5s (so the buffer picks up `onSetEnd`), then jumps to `SESSION_COMPLETE` and fires `onSessionEnd`. Remaining sets are skipped. The behavior was changed at user request — patients use T-pose to terminate the workout entirely, not just one set.
+
+### 2. Squats not detected — joint-aware visibility gate
+`isFullyInFrame` was checking all 33 landmarks at visibility ≥ 0.5, which routinely failed for squat-style movements that hide feet/face from a tablet camera. New behavior:
+- `isFullyInFrame` now only checks the body landmarks needed for joint math (11–16, 23–28, 31–32). Face (0–10), fingers (17–22), and heels (29–30) are ignored.
+- `isRepJointVisible(landmarks, repConfig)` — new helper. Checks only the specific triplet(s) for the configured primary (and optional secondary) joint at a relaxed 0.3 visibility threshold.
+- `feedPose` ACTIVE path now feeds the rep detector whenever the joint is visible, regardless of full-body visibility. Partial-body pause still triggers, but only when the relevant joint is occluded.
+- Squat reps register even when the patient's head dips out of frame at the bottom of the squat.
+
+### 3. End Workout button (mid-session manual stop)
+- New `endSessionEarly(reason)` public method on `SessionStateMachine`. Default reason `'abandoned'`. Fires the same `onSetEnd → onSessionEnd` sequence so the buffer flushes consistently.
+- Top bar in `SessionRunClient` shows a red "End workout" button while `phase` is anything except `IDLE` or `SESSION_COMPLETE`. Tapping it opens a confirmation overlay; confirming calls `smRef.current.endSessionEarly('abandoned')`. The existing post-completion upload path then runs.
+
+### 4. Soft delete exercises
+- Migration `0007_exercise_archive_view.sql`: adds `archived_at timestamptz` column to `exercises`. FK references from `prescription_items`/`session_sets` keep working — past playback resolves; the row just stops appearing in pickers.
+- `archiveExerciseAction(id)` in `app/actions/exercises.ts` sets `archived_at = now()` and revalidates `/clinician/exercises`.
+- Exercise list (`/clinician/exercises`) and prescription builder (`/clinician/prescribe/[patientId]`) now filter `.is('archived_at', null)`.
+- Per-row `DeleteExerciseButton` (client component) handles the inline two-step confirm UX.
+
+### 5. View orientation per exercise
+Same migration adds `view_orientation text not null default 'front' check (view_orientation in ('front', 'side'))`. Patient must be in the requested orientation before the start gesture is accepted.
+
+- `lib/pose/orientationDetector.ts` (new): `detectOrientation(landmarks)` classifies front vs side from shoulder/hip x-spread (front: ≥ 10% horizontal spread; side: ≤ 6% — i.e. shoulders stacked in x). `OrientationGate` requires a 1-second sustained hold before reporting progress = 1.
+- `SetEntry` gained `viewOrientation: 'front' | 'side'`. The state machine instantiates a fresh `OrientationGate` per set in `enterReady()`.
+- READY overlay is now three-stage: in-frame → orientation → O-pose. UI shows a per-stage instruction ("Stand sideways to the camera" / "Face the camera") and an amber progress bar while the orientation hold accrues.
+- Snapshot exposes `orientationProgress` (0..1) and `orientationOk` (bool).
+- Exercise creation form (`NewExerciseClient.tsx`) has a two-button orientation picker. Persisted via `view_orientation` on `ExercisePayload`.
+- The exercises list shows orientation in a "View" column.
+
+### 6. Playback right column — 4 stacked line-graph trends
+Replaces the old `HRTimeline` + `JointAngleReadout` panels with `MetricsTimeline.tsx`, which stacks four mini line charts that share a time axis and a synchronized scrubber cursor:
+1. **HR** (bpm) — keeps the upper-limit reference dash; reading goes red when the cursor sample exceeds the limit.
+2. **Primary joint angle** (°) — derived per-frame from `bundle.poses` using whichever set's joint is active at that timestamp. Y-axis auto-scales to the actual data range with cushion (handles joints with bidirectional motion — e.g. arm raises swing both above and below shoulder height — without flat-lining).
+3. **Secondary joint angle** (°) — same approach; renders only when the active set has a secondary joint configured.
+4. **Reps** — step-after line (count vs time) drawn from rep `startedTMs`. Y-axis caps at total reps in the bundle.
+
+Primary chart adds light blue/red `ReferenceArea` bands for start/end zones of the active set so clinicians can see how angle traces relate to the prescribed thresholds. The old `JointAngleReadout` and `HRTimeline` components are no longer wired into the page (kept on disk for now in case we want to bring them back; can be deleted later).
+
+**Key files:** `lib/pose/sessionStateMachine.ts`, `lib/pose/orientationDetector.ts` (new), `app/(patient)/patient/session/[prescriptionId]/run/SessionRunClient.tsx`, `app/(patient)/patient/session/[prescriptionId]/run/page.tsx`, `app/actions/exercises.ts`, `app/(clinician)/clinician/exercises/page.tsx`, `app/(clinician)/clinician/exercises/DeleteExerciseButton.tsx` (new), `app/(clinician)/clinician/exercises/new/NewExerciseClient.tsx`, `app/(clinician)/clinician/prescribe/[patientId]/page.tsx`, `db/migrations/0007_exercise_archive_view.sql` (new), `lib/supabase/types.ts`, `components/playback/MetricsTimeline.tsx` (new), `components/playback/PlaybackClient.tsx`

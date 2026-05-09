@@ -16,6 +16,7 @@ export type Database = {
     Tables: {
       exercises: {
         Row: {
+          archived_at: string | null
           created_at: string
           created_by: string | null
           direction: string
@@ -34,8 +35,10 @@ export type Database = {
           secondary_start_min: number | null
           start_angle_max: number
           start_angle_min: number
+          view_orientation: string
         }
         Insert: {
+          archived_at?: string | null
           created_at?: string
           created_by?: string | null
           direction: string
@@ -54,8 +57,10 @@ export type Database = {
           secondary_start_min?: number | null
           start_angle_max: number
           start_angle_min: number
+          view_orientation?: string
         }
         Update: {
+          archived_at?: string | null
           created_at?: string
           created_by?: string | null
           direction?: string
@@ -74,6 +79,7 @@ export type Database = {
           secondary_start_min?: number | null
           start_angle_max?: number
           start_angle_min?: number
+          view_orientation?: string
         }
         Relationships: [
           {

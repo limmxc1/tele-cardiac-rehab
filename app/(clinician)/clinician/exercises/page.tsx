@@ -1,10 +1,12 @@
 import Link from 'next/link'
 import { supabaseServer } from '@/lib/supabase/server'
+import DeleteExerciseButton from './DeleteExerciseButton'
 
 export default async function ExercisesPage() {
   const { data: exercises } = await supabaseServer
     .from('exercises')
-    .select('id, name, primary_joint, primary_side, direction, created_at')
+    .select('id, name, primary_joint, primary_side, direction, view_orientation, created_at')
+    .is('archived_at', null)
     .order('created_at', { ascending: false })
 
   return (
@@ -38,8 +40,10 @@ export default async function ExercisesPage() {
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Name</th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Joint</th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Side</th>
+                  <th className="px-4 py-3 text-left font-medium text-slate-600">View</th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Direction</th>
                   <th className="px-4 py-3 text-left font-medium text-slate-600">Created</th>
+                  <th className="px-4 py-3 text-right font-medium text-slate-600"></th>
                 </tr>
               </thead>
               <tbody>
@@ -48,11 +52,17 @@ export default async function ExercisesPage() {
                     <td className="px-4 py-3 font-medium text-slate-800">{ex.name}</td>
                     <td className="px-4 py-3 capitalize text-slate-600">{ex.primary_joint}</td>
                     <td className="px-4 py-3 capitalize text-slate-600">{ex.primary_side}</td>
+                    <td className="px-4 py-3 capitalize text-slate-600">
+                      {ex.view_orientation === 'side' ? 'Side view' : 'Front view'}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">
                       {ex.direction === 'flexion_first' ? 'Flex first' : 'Extend first'}
                     </td>
                     <td className="px-4 py-3 text-slate-400">
                       {new Date(ex.created_at).toLocaleDateString('en-SG')}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <DeleteExerciseButton id={ex.id} name={ex.name} />
                     </td>
                   </tr>
                 ))}

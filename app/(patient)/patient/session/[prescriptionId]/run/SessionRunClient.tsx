@@ -101,7 +101,10 @@ export default function SessionRunClient({
     completedReps: [],
     fullyInFrame: false,
     oPoseProgress: 0,
+    orientationProgress: 0,
+    orientationOk: false,
   }))
+  const [confirmingEnd, setConfirmingEnd] = useState(false)
   const [h10Status, setH10Status] = useState<H10Status>('idle')
   const [h10Error, setH10Error] = useState<string | null>(null)
   const [cameraError, setCameraError] = useState<{ kind: 'denied' | 'unavailable' | 'unknown'; message: string } | null>(null)
@@ -358,6 +361,11 @@ export default function SessionRunClient({
     setMutedUI(next)
   }, [])
 
+  const handleConfirmEnd = useCallback(() => {
+    setConfirmingEnd(false)
+    smRef.current?.endSessionEarly('abandoned')
+  }, [])
+
   const { phase } = snap
   const isActive = phase === 'ACTIVE' || phase === 'READY'
 
@@ -388,6 +396,14 @@ export default function SessionRunClient({
         >
           {mutedUI ? '🔇' : '🔊'}
         </button>
+        {phase !== 'IDLE' && phase !== 'SESSION_COMPLETE' && (
+          <button
+            onClick={() => setConfirmingEnd(true)}
+            className="rounded-lg bg-rose-600/90 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-600"
+          >
+            End workout
+          </button>
+        )}
       </div>
 
       {/* Body — 2 columns: camera left, stats right */}
@@ -543,24 +559,63 @@ export default function SessionRunClient({
           <div className="bg-black/80 rounded-3xl px-10 py-6 text-center max-w-md">
             <p className="text-slate-300 text-xs uppercase tracking-widest">Get Ready</p>
             <p className="text-white text-2xl font-bold mt-1">
-              Make an &ldquo;O&rdquo; above your head to start
-            </p>
-            <p className="text-slate-400 text-sm mt-1">
-              Raise both arms and touch hands above your head.
+              {snap.set.exerciseName}
             </p>
 
-            {/* Body-visibility coaching takes precedence — no point trying the
-                gesture if the camera can't see all of you. */}
+            {/* Three-stage coaching: in-frame → orientation → start gesture. */}
             {!snap.fullyInFrame ? (
               <p className="mt-4 text-amber-300 text-base font-medium">
                 Step fully into the frame
               </p>
-            ) : (
-              <div className="mt-5 flex flex-col items-center gap-2">
-                <OPoseRing progress={snap.oPoseProgress} />
-                <p className="text-slate-400 text-xs">Hold for 1.5s</p>
+            ) : !snap.orientationOk ? (
+              <div className="mt-4 flex flex-col items-center gap-2">
+                <p className="text-amber-300 text-base font-medium">
+                  {snap.set.viewOrientation === 'side'
+                    ? 'Stand sideways to the camera'
+                    : 'Face the camera'}
+                </p>
+                <p className="text-slate-400 text-xs">
+                  {snap.set.viewOrientation === 'side'
+                    ? 'Turn so one shoulder points toward the camera.'
+                    : 'Square your shoulders and hips toward the camera.'}
+                </p>
+                <OrientationBar progress={snap.orientationProgress} />
               </div>
+            ) : (
+              <>
+                <p className="text-slate-300 text-sm mt-1">
+                  Make an &ldquo;O&rdquo; above your head to start
+                </p>
+                <div className="mt-5 flex flex-col items-center gap-2">
+                  <OPoseRing progress={snap.oPoseProgress} />
+                  <p className="text-slate-400 text-xs">Hold for 1.5s</p>
+                </div>
+              </>
             )}
+          </div>
+        </div>
+      )}
+
+      {confirmingEnd && (
+        <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-black/90 px-6 text-center">
+          <p className="text-3xl">⚠️</p>
+          <p className="text-white text-2xl font-bold">End the workout now?</p>
+          <p className="text-slate-300 text-sm max-w-sm">
+            We&apos;ll save what you&apos;ve done so far and skip the remaining sets.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={handleConfirmEnd}
+              className="px-6 py-3 rounded-xl bg-rose-600 text-white text-base font-semibold hover:bg-rose-500"
+            >
+              Yes, end workout
+            </button>
+            <button
+              onClick={() => setConfirmingEnd(false)}
+              className="px-6 py-3 rounded-xl bg-slate-700 text-slate-200 text-base font-medium hover:bg-slate-600"
+            >
+              Keep going
+            </button>
           </div>
         </div>
       )}
@@ -666,6 +721,17 @@ function PauseOverlay({
         <TPoseRing progress={tposeProgress} />
       )}
     </>
+  )
+}
+
+function OrientationBar({ progress }: { progress: number }) {
+  return (
+    <div className="mt-1 h-2 w-44 overflow-hidden rounded-full bg-slate-700">
+      <div
+        className="h-full bg-amber-400 transition-[width] duration-150"
+        style={{ width: `${Math.max(0, Math.min(1, progress)) * 100}%` }}
+      />
+    </div>
   )
 }
 

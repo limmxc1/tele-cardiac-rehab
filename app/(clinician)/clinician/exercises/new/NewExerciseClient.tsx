@@ -10,6 +10,7 @@ import { getJointAngle } from '@/lib/pose/angles'
 type Joint = 'knee' | 'hip' | 'shoulder' | 'elbow' | 'ankle'
 type Side = 'left' | 'right' | 'both'
 type Direction = 'flexion_first' | 'extension_first'
+type ViewOrientation = 'front' | 'side'
 type DemoStatus = 'idle' | 'loading' | 'running' | 'stopped'
 
 const BUCKETS = 36
@@ -33,6 +34,7 @@ export default function NewExerciseClient() {
   const [joint, setJoint] = useState<Joint>('knee')
   const [side, setSide] = useState<Side>('both')
   const [direction, setDirection] = useState<Direction>('flexion_first')
+  const [viewOrientation, setViewOrientation] = useState<ViewOrientation>('front')
   const [gifFile, setGifFile] = useState<File | null>(null)
 
   // Threshold sliders
@@ -267,6 +269,7 @@ export default function NewExerciseClient() {
         secondary_start_max: secondaryEnabled ? secondaryStartMax : null,
         secondary_end_min: secondaryEnabled ? secondaryEndMin : null,
         secondary_end_max: secondaryEnabled ? secondaryEndMax : null,
+        view_orientation: viewOrientation,
         created_by: user?.id ?? null,
       })
 
@@ -371,6 +374,38 @@ export default function NewExerciseClient() {
               <option value="right">Right</option>
             </select>
           </div>
+        </div>
+
+        {/* Camera orientation requirement */}
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-slate-700">Patient view orientation *</label>
+          <div className="grid grid-cols-2 gap-2">
+            {(['front', 'side'] as const).map((opt) => {
+              const active = viewOrientation === opt
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => setViewOrientation(opt)}
+                  className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                    active
+                      ? 'border-blue-500 bg-blue-50 text-blue-700 ring-2 ring-blue-200'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="text-sm font-semibold capitalize">{opt} view</div>
+                  <div className="text-[11px] text-slate-500">
+                    {opt === 'front'
+                      ? 'Patient faces the camera (e.g. squats, sit-to-stand).'
+                      : 'Patient stands sideways (e.g. arm raise, bicep curl).'}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[11px] text-slate-400">
+            The session won&apos;t start until the patient is in this orientation.
+          </p>
         </div>
 
         {/* Always mount the video element so videoRef is available before demo starts */}
