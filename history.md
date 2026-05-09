@@ -186,9 +186,26 @@ Audit of Phase 7 found several blockers; fixed in a follow-up patch:
 
 ---
 
+## Phase 8 — Clinician playback
+
+Synchronized session replay for clinicians: stickman, HR trend, scrubber, per-rep table, notes.
+
+- **Session history table** — `app/(clinician)/clinician/patients/[id]/page.tsx` replaces the placeholder with a real table (date, exercises, total reps, max HR, status, "Review →" link). Aggregates fetched in two parallel queries against `session_sets` (reps + exercise names) and `session_hr_samples` (max HR), then merged in JS keyed by `session_id`.
+- **Playback bundle loader** — `lib/playback/loader.ts` fetches the session row + sets/reps/pauses/HR/pose-frames in five parallel queries, normalizes every timestamp to **ms-since-session-start**, flattens packed pose frames (`{ts_ms, lm[33×3]}`) into a single sorted array, and hands the client a single immutable `PlaybackBundle`. Duration falls back to the latest of `last_pose / last_hr / last_rep` when `completed_at` is null.
+- **StickmanCanvas** (`components/playback/StickmanCanvas.tsx`) — DPR-aware canvas that binary-searches the pose array for the current playback time, lerps landmarks between adjacent frames, and projects normalized coords into a 4:3 letterboxed view. **Anatomical (not mirrored)**: patient's right hand appears on viewer's left.
+- **HRTimeline** (`components/playback/HRTimeline.tsx`) — recharts line chart with HR-upper-limit reference line and a vertical cursor at `currentTMs`. X axis ticks formatted as `m:ss`.
+- **SyncedScrubber** (`components/playback/SyncedScrubber.tsx`) — play/pause, 0.5×/1×/2× speed buttons, and a range scrubber with pause-event markers (gray bars) overlaid on the track; markers' titles describe the pause reason on hover. Custom thumb styling via inline `<style>`.
+- **PlaybackClient** (`components/playback/PlaybackClient.tsx`) — the orchestrator. Single `currentTMs` state driven off `requestAnimationFrame` (multiplied by speed); auto-stops at `durationMs`. Computes `repsDone` and the active exercise/set label by scanning reps in playback order. Lays out scrubber on top, stickman + HR side-by-side, then notes editor and per-rep table.
+- **RepTable** (`components/playback/RepTable.tsx`) — clickable rows that seek the playback to that rep's `startedTMs`; the active rep's row is highlighted blue. Shows set #, exercise, rep #, time, peak°, ROM°, HR @ peak.
+- **Clinician notes** — `NotesEditor.tsx` + `app/actions/sessionNotes.ts` server action that updates `sessions.clinician_notes` and revalidates the playback path.
+- **Page** — `app/(clinician)/clinician/patients/[id]/sessions/[sid]/playback/page.tsx` validates the session belongs to the patient (checks `bundle.patientId === id`, `notFound()` otherwise), then renders the client.
+
+**Key files:** `lib/playback/loader.ts`, `components/playback/{StickmanCanvas,HRTimeline,SyncedScrubber,RepTable,NotesEditor,PlaybackClient}.tsx`, `app/actions/sessionNotes.ts`, `app/(clinician)/clinician/patients/[id]/page.tsx`, `app/(clinician)/clinician/patients/[id]/sessions/[sid]/playback/page.tsx`
+
+---
+
 ## Remaining phases
 
 | Phase | Description |
 |---|---|
-| 8 | Clinician playback — stickman replay, HR trend chart, synced scrubber, per-rep table |
 | 9 | Polish — frame visibility check, implausible HR handling, browser/permission error screens, session abandonment recovery |

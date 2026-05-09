@@ -2,6 +2,75 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase/server'
 
+type SessionRow = {
+  id: string
+  started_at: string
+  completed_at: string | null
+  status: string
+  total_reps: number
+  max_hr: number | null
+  exercises: string
+}
+
+async function loadSessionHistory(patientId: string): Promise<SessionRow[]> {
+  const { data: sessions } = await supabaseServer
+    .from('sessions')
+    .select('id, started_at, completed_at, status')
+    .eq('patient_id', patientId)
+    .order('started_at', { ascending: false })
+    .limit(30)
+
+  if (!sessions || sessions.length === 0) return []
+
+  const sessionIds = sessions.map((s) => s.id)
+
+  // Fetch sets (for exercise names + total reps) and HR samples (for max HR) in parallel.
+  const [{ data: setRows }, { data: hrRows }] = await Promise.all([
+    supabaseServer
+      .from('session_sets')
+      .select('session_id, reps_completed, exercises ( name )')
+      .in('session_id', sessionIds),
+    supabaseServer
+      .from('session_hr_samples')
+      .select('session_id, hr_bpm')
+      .in('session_id', sessionIds),
+  ])
+
+  type SetRow = {
+    session_id: string
+    reps_completed: number
+    exercises: { name: string } | { name: string }[] | null
+  }
+
+  const repsBySession = new Map<string, number>()
+  const exercisesBySession = new Map<string, Set<string>>()
+  for (const r of (setRows ?? []) as SetRow[]) {
+    repsBySession.set(r.session_id, (repsBySession.get(r.session_id) ?? 0) + (r.reps_completed ?? 0))
+    const ex = Array.isArray(r.exercises) ? r.exercises[0] : r.exercises
+    if (ex?.name) {
+      const set = exercisesBySession.get(r.session_id) ?? new Set<string>()
+      set.add(ex.name)
+      exercisesBySession.set(r.session_id, set)
+    }
+  }
+
+  const maxHrBySession = new Map<string, number>()
+  for (const h of hrRows ?? []) {
+    const cur = maxHrBySession.get(h.session_id) ?? 0
+    if (h.hr_bpm > cur) maxHrBySession.set(h.session_id, h.hr_bpm)
+  }
+
+  return sessions.map((s) => ({
+    id: s.id,
+    started_at: s.started_at,
+    completed_at: s.completed_at,
+    status: s.status,
+    total_reps: repsBySession.get(s.id) ?? 0,
+    max_hr: maxHrBySession.get(s.id) ?? null,
+    exercises: Array.from(exercisesBySession.get(s.id) ?? []).join(', ') || '—',
+  }))
+}
+
 export default async function PatientDetailPage({
   params,
 }: {
@@ -18,18 +87,22 @@ export default async function PatientDetailPage({
 
   if (!patient) notFound()
 
-  const { data: prescriptions } = await supabaseServer
-    .from('prescriptions')
-    .select('id, scheduled_date, hr_upper_limit_bpm, status')
-    .eq('patient_id', id)
-    .order('scheduled_date', { ascending: false })
-    .limit(30)
+  const [{ data: prescriptions }, sessions] = await Promise.all([
+    supabaseServer
+      .from('prescriptions')
+      .select('id, scheduled_date, hr_upper_limit_bpm, status')
+      .eq('patient_id', id)
+      .order('scheduled_date', { ascending: false })
+      .limit(30),
+    loadSessionHistory(id),
+  ])
 
   const statusColor: Record<string, string> = {
     scheduled: 'bg-blue-100 text-blue-700',
     in_progress: 'bg-yellow-100 text-yellow-700',
     completed: 'bg-green-100 text-green-700',
     missed: 'bg-red-100 text-red-700',
+    abandoned: 'bg-slate-100 text-slate-600',
   }
 
   return (
@@ -103,9 +176,61 @@ export default async function PatientDetailPage({
           <h2 className="mb-3 text-sm font-semibold text-slate-500 uppercase tracking-wide">
             Session History
           </h2>
-          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-400">
-            <p className="text-sm">Session playback available in Phase 8.</p>
-          </div>
+          {sessions.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-400">
+              <p className="text-sm">No completed sessions yet.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+              <table className="w-full text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium text-slate-600">Date</th>
+                    <th className="px-4 py-3 text-left font-medium text-slate-600">Exercises</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-600">Reps</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-600">Max HR</th>
+                    <th className="px-4 py-3 text-left font-medium text-slate-600">Status</th>
+                    <th className="px-4 py-3 text-right font-medium text-slate-600"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.map((s) => (
+                    <tr key={s.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-3 text-slate-800">
+                        {new Date(s.started_at).toLocaleString('en-SG', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">{s.exercises}</td>
+                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">{s.total_reps}</td>
+                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">
+                        {s.max_hr ?? '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium capitalize ${statusColor[s.status] ?? 'bg-slate-100 text-slate-600'}`}
+                        >
+                          {s.status.replace('_', ' ')}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          href={`/clinician/patients/${id}/sessions/${s.id}/playback`}
+                          className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                        >
+                          Review →
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       </main>
     </div>
