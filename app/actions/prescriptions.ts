@@ -3,6 +3,88 @@
 import { redirect } from 'next/navigation'
 import { supabaseServer } from '@/lib/supabase/server'
 
+export type MonthPrescription = {
+  id: string
+  scheduled_date: string
+  hr_upper_limit_bpm: number
+  status: string
+  item_count: number
+}
+
+export type PrescriptionItemDetail = {
+  id: string
+  sequence_order: number
+  num_sets: number
+  reps_per_set: number
+  rest_seconds: number
+  exercise_name: string
+  exercise_joint: string
+  exercise_side: string
+}
+
+export async function markMissedAction(patientId: string): Promise<void> {
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Singapore' })
+  await supabaseServer
+    .from('prescriptions')
+    .update({ status: 'missed' })
+    .eq('patient_id', patientId)
+    .eq('status', 'scheduled')
+    .lt('scheduled_date', todayStr)
+}
+
+export async function getMonthPrescriptionsAction(
+  patientId: string,
+  year: number,
+  month: number // 0-indexed
+): Promise<MonthPrescription[]> {
+  const mm = String(month + 1).padStart(2, '0')
+  const startDate = `${year}-${mm}-01`
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const endDate = `${year}-${mm}-${String(daysInMonth).padStart(2, '0')}`
+
+  const { data } = await supabaseServer
+    .from('prescriptions')
+    .select('id, scheduled_date, hr_upper_limit_bpm, status, prescription_items(id)')
+    .eq('patient_id', patientId)
+    .gte('scheduled_date', startDate)
+    .lte('scheduled_date', endDate)
+    .order('scheduled_date')
+
+  return (data ?? []).map((p) => ({
+    id: p.id,
+    scheduled_date: p.scheduled_date,
+    hr_upper_limit_bpm: p.hr_upper_limit_bpm,
+    status: p.status,
+    item_count: Array.isArray(p.prescription_items) ? p.prescription_items.length : 0,
+  }))
+}
+
+export async function getPrescriptionItemsAction(
+  prescriptionId: string
+): Promise<PrescriptionItemDetail[]> {
+  const { data } = await supabaseServer
+    .from('prescription_items')
+    .select(
+      'id, sequence_order, num_sets, reps_per_set, rest_seconds, exercises(name, primary_joint, primary_side)'
+    )
+    .eq('prescription_id', prescriptionId)
+    .order('sequence_order')
+
+  return (data ?? []).map((item) => {
+    const ex = item.exercises as { name: string; primary_joint: string; primary_side: string } | null
+    return {
+      id: item.id,
+      sequence_order: item.sequence_order,
+      num_sets: item.num_sets,
+      reps_per_set: item.reps_per_set,
+      rest_seconds: item.rest_seconds,
+      exercise_name: ex?.name ?? 'Unknown',
+      exercise_joint: ex?.primary_joint ?? '',
+      exercise_side: ex?.primary_side ?? '',
+    }
+  })
+}
+
 export interface PrescriptionItemInput {
   exercise_id: string
   num_sets: number
